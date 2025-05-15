@@ -132,22 +132,49 @@ def create_cycle_table(number_of_cycles: int, cyclebuffer: np.ndarray, amplitude
     if number_of_cycles <= 0: return pd.DataFrame()
     ranks, periods, bartels_probs_str, amps_or_strengths, phases_deg = [], [], [], [], []
     amp_col_name = "Cycle Strength" if use_cycle_strength else "Amplitude"
-    for i in range(1, number_of_cycles + 1):
-        if i >= len(cyclebuffer) or i >= len(amplitudebuffer) or i >= len(phasebuffer): continue
-        ranks.append(i)
+    
+    # number_of_cycles is the count of 0-indexed items. Iterate from 0 to N-1.
+    for i in range(number_of_cycles): 
+        # Check if index i is valid for the buffers (should be, as number_of_cycles is the count)
+        # This safety check might be redundant if number_of_cycles is accurate.
+        if i >= len(cyclebuffer) or i >= len(amplitudebuffer) or \
+           i >= len(phasebuffer) or (filter_bartels and i >= len(cycleBartelsBuffer)): 
+            continue 
+
+        ranks.append(i + 1) # Display Rank is 1-based
         periods.append(cyclebuffer[i])
         amps_or_strengths.append(amplitudebuffer[i])
         phase_rad = phasebuffer[i]
-        phase_deg = math.degrees(phase_rad % (2 * math.pi))
+        phase_deg = math.degrees(phase_rad % (2 * math.pi)) # Ensure phase is in [0, 360)
         phases_deg.append(phase_deg)
+        
         if filter_bartels:
-            bartels_idx = i - 1
-            if bartels_idx < len(cycleBartelsBuffer): bartels_probs_str.append(f"{cycleBartelsBuffer[bartels_idx]:.2f}%")
-            else: bartels_probs_str.append("N/A")
-        else: bartels_probs_str.append("N/A")
-    if not periods: return pd.DataFrame()
-    df_cycles = pd.DataFrame({"Period": periods, "Bartel": bartels_probs_str, amp_col_name: amps_or_strengths, "Phase (deg)": phases_deg})
-    df_cycles.index = pd.Index(ranks, name="Rank")
+            # cycleBartelsBuffer is also 0-indexed, corresponding to cyclebuffer[i]
+            bartels_idx = i 
+            # Ensure bartels_idx is within the bounds of cycleBartelsBuffer that contains scores
+            if bartels_idx < len(cycleBartelsBuffer): # Check against actual length
+                 # Ensure the value is a number before formatting (it might be 0 from initialization beyond filtered cycles)
+                if isinstance(cycleBartelsBuffer[bartels_idx], (int, float)) and cycleBartelsBuffer[bartels_idx] != 0:
+                    bartels_probs_str.append(f"{cycleBartelsBuffer[bartels_idx]:.2f}%")
+                elif cycleBartelsBuffer[bartels_idx] == 0 and number_of_cycles > 0 : # if it's a valid cycle that got 0 score
+                     bartels_probs_str.append(f"{0.0:.2f}%")
+                else: # Should not happen if number_of_cycles is correct for populated scores
+                    bartels_probs_str.append("N/A")
+            else: 
+                bartels_probs_str.append("N/A")
+        else: 
+            bartels_probs_str.append("N/A")
+            
+    if not periods: return pd.DataFrame() # No data to form DataFrame
+    
+    data_dict = {"Period": periods}
+    if filter_bartels: # Only add Bartel column if filtering was on
+        data_dict["Bartel"] = bartels_probs_str
+    data_dict[amp_col_name] = amps_or_strengths
+    data_dict["Phase (deg)"] = phases_deg
+    
+    df_cycles = pd.DataFrame(data_dict)
+    df_cycles.index = pd.Index(ranks, name="Rank") # Ranks are 1, 2, 3...
     return df_cycles
 
 # save_indicator_data can remain as previously provided, as streamlit_app.py now handles JSON creation for download directly.
