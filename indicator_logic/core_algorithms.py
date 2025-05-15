@@ -540,30 +540,29 @@ def goertzel(src, forBar, samplesize, per, squaredAmp, useAddition, useCosine, U
 
             number_of_cycles = no_Bcycles # Original: if no_Bcycles != 0 else 0
 
-            if SortBartels and number_of_cycles >= 1: # Original: number_of_cycles >=1
-                # Original Pine loop for sort was 1 to N-1 (i) and i+1 to N (k) -> 1-based cycle ranks
-                # It used cycleBartelsBuffer[k] > cycleBartelsBuffer[i]
-                for i_sort_b in range(1, number_of_cycles): # i_sort_b is 1-based cycle rank
-                    for k_sort_b in range(i_sort_b + 1, number_of_cycles + 1): # k_sort_b is 1-based cycle rank
-                        # Boundary check from original script for cycleBartelsBuffer access using 1-based indices
-                        if k_sort_b < len(cycleBartelsBuffer) and i_sort_b < len(cycleBartelsBuffer):
-                            if cycleBartelsBuffer[k_sort_b] > cycleBartelsBuffer[i_sort_b]:
-                                # Temps for swap
-                                y_amp_b = amplitudebuffer[i_sort_b]
-                                w_cycle_b = cyclebuffer[i_sort_b]
-                                x_phase_b = phasebuffer[i_sort_b]
-                                v_bart_b = cycleBartelsBuffer[i_sort_b] # 1-indexed access to cycleBartelsBuffer
-                                
-                                amplitudebuffer[i_sort_b] = amplitudebuffer[k_sort_b]
-                                cyclebuffer[i_sort_b] = cyclebuffer[k_sort_b]
-                                phasebuffer[i_sort_b] = phasebuffer[k_sort_b]
-                                cycleBartelsBuffer[i_sort_b] = cycleBartelsBuffer[k_sort_b] # 1-indexed access
-                                
-                                amplitudebuffer[k_sort_b] = y_amp_b
-                                cyclebuffer[k_sort_b] = w_cycle_b
-                                phasebuffer[k_sort_b] = x_phase_b
-                                cycleBartelsBuffer[k_sort_b] = v_bart_b # 1-indexed access
-                        # else: print warning from original - omitted
+            if SortBartels and number_of_cycles >= 1: # number_of_cycles is now the count of 0-indexed items
+                # Sort the 0-indexed compacted buffers.
+                # Valid indices are 0 to number_of_cycles - 1.
+                for i_sort_b in range(number_of_cycles - 1):  # Corrected: Loop from index 0 to N-2
+                    for k_sort_b in range(i_sort_b + 1, number_of_cycles): # Corrected: Loop from index i+1 to N-1
+                        # cycleBartelsBuffer now contains the scores for the compacted, 0-indexed cycles.
+                        # Accesses are within 0 to number_of_cycles-1.
+                        if cycleBartelsBuffer[k_sort_b] > cycleBartelsBuffer[i_sort_b]: # Sorting descending by Bartels score
+                            # Swap all corresponding buffer elements
+                            y_amp_b = amplitudebuffer[i_sort_b]
+                            w_cycle_b = cyclebuffer[i_sort_b]
+                            x_phase_b = phasebuffer[i_sort_b]
+                            v_bart_b = cycleBartelsBuffer[i_sort_b]
+                            
+                            amplitudebuffer[i_sort_b] = amplitudebuffer[k_sort_b]
+                            cyclebuffer[i_sort_b] = cyclebuffer[k_sort_b]
+                            phasebuffer[i_sort_b] = phasebuffer[k_sort_b]
+                            cycleBartelsBuffer[i_sort_b] = cycleBartelsBuffer[k_sort_b]
+                            
+                            amplitudebuffer[k_sort_b] = y_amp_b
+                            cyclebuffer[k_sort_b] = w_cycle_b
+                            phasebuffer[k_sort_b] = x_phase_b
+                            cycleBartelsBuffer[k_sort_b] = v_bart_b
 
     # Calculate wave components
     # goeWorkPast/Future: rows are time steps, cols are 1-indexed cycle_num
