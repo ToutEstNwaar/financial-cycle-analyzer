@@ -571,9 +571,9 @@ def goertzel(src, forBar, samplesize, per, squaredAmp, useAddition, useCosine, U
            i_cycle_num < len(phasebuffer) and \
            i_cycle_num < len(cyclebuffer): # Check all 1-indexed buffers
 
-            amplitude = amplitudebuffer[i_cycle_num]
-            phase = phasebuffer[i_cycle_num]
-            cycle_period = cyclebuffer[i_cycle_num]
+            amplitude = amplitudebuffer[i_cycle_num - 1]
+            phase = phasebuffer[i_cycle_num - 1]
+            cycle_period = cyclebuffer[i_cycle_num - 1]
 
             if cycle_period == 0: continue
 
