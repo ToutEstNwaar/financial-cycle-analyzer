@@ -27,11 +27,10 @@ st.markdown("Upload OHLCV data (CSV). Analysis updates automatically as settings
 # --- Helper function to get default settings ---
 def _get_default_settings():
     defaults = ind_settings.DEFAULT_SETTINGS_DICT.copy()
-    defaults["source_price_type"] = "Close" # Default defined in the previous version
-    defaults["WindowSizePast_base"] = ind_settings.DEFAULT_WINDOW_SIZE_PAST
-    defaults["WindowSizeFuture_base"] = ind_settings.DEFAULT_WINDOW_SIZE_FUTURE
-    # Ensure all keys that have widgets are present in the defaults from ind_settings
-    # or are added here if they are app-specific session state keys.
+    defaults["source_price_type"] = "Close"
+    # Ensure keys from ind_settings.DEFAULT_SETTINGS_DICT are used
+    # defaults["WindowSizePast_base"] = ind_settings.DEFAULT_WINDOW_SIZE_PAST # Already in DEFAULT_SETTINGS_DICT
+    # defaults["WindowSizeFuture_base"] = ind_settings.DEFAULT_WINDOW_SIZE_FUTURE # Already in DEFAULT_SETTINGS_DICT
     return defaults
 
 # --- Initialize Session State ---
@@ -68,17 +67,35 @@ st.sidebar.selectbox(
 )
 
 st.sidebar.subheader("General Settings")
+
+# --- ADDED/MODIFIED WIDGETS FOR WINDOW SIZE ---
+st.sidebar.slider(
+    "Base Past Window Size",
+    min_value=50,  # Increased min_value to be more practical for typical MaxPer values
+    max_value=1000, # Max value can be adjusted
+    step=10,
+    key="WindowSizePast_base",
+    help="Defines the number of historical bars for the core cycle analysis. 'Max Period' will be constrained by this value and 'Bartels: N Cycles'."
+)
 st.sidebar.slider(
     "Max Period (MaxPer)",
-    min_value=10,
-    max_value=300,
+    min_value=5,  # Min value, must be > 0
+    max_value=300, # This max_value is a general upper limit for the UI.
+                   # Actual operational max is constrained by 'Base Past Window Size'.
     step=1,
-    key="MaxPer"
+    key="MaxPer",
+    help="Max cycle period to search for. Must be compatible with 'Base Past Window Size' and 'Bartels: N Cycles'. If too high, an error will be shown."
 )
 
-# Example for base window sizes if they were to be user-editable
-# st.sidebar.slider("Base Past Window", 10, 500, step=10, key="WindowSizePast_base")
-# st.sidebar.slider("Base Future Window", 10, 500, step=10, key="WindowSizeFuture_base")
+st.sidebar.slider(
+    "Base Future Window Size",
+    min_value=20,
+    max_value=500,
+    step=10,
+    key="WindowSizeFuture_base",
+    help="Defines the base number of bars for the future wave projection. Actual projection length may be at least 2 * MaxPer."
+)
+# --- END OF ADDED/MODIFIED WIDGETS ---
 
 st.sidebar.number_input(
     "Start At Cycle",
@@ -170,6 +187,8 @@ if uploaded_file is not None:
         st.subheader(f"Data Preview: {uploaded_file.name} ({len(ohlc_data)} rows)")
         st.dataframe(ohlc_data.head(3))
 
+        # Ensure WindowSizePast_base and WindowSizeFuture_base are in core_calc_arg_keys
+        # (They already are in your provided code)
         core_calc_arg_keys = [
             "source_price_type", "MaxPer", "WindowSizePast_base", "WindowSizeFuture_base",
             "detrendornot", "DT_ZLper1", "DT_ZLper2", "DT_HPper1", "DT_HPper2",
@@ -232,6 +251,7 @@ if uploaded_file is not None:
 
             st.subheader(f"Indicator Plot (Last Updated: {datetime.datetime.now().strftime('%H:%M:%S.%f')})")
             calc_bar_idx = full_results.get('calculation_bar_idx', len(ohlc_data) - 1)
+            # Use the 'current_WindowSizePast/Future' from results for plotting, as these are adjusted ones
             plot_ws_past = full_results.get('current_WindowSizePast', st.session_state.WindowSizePast_base)
             plot_ws_future = full_results.get('current_WindowSizeFuture', st.session_state.WindowSizeFuture_base)
 
@@ -245,8 +265,13 @@ if uploaded_file is not None:
 
             st.subheader("Download Results")
             download_settings = {**core_calc_args, **wave_sum_args}
+            # These already correctly save the base values from the UI
             download_settings["WindowSizePast_from_UI_if_different"] = st.session_state.WindowSizePast_base
             download_settings["WindowSizeFuture_from_UI_if_different"] = st.session_state.WindowSizeFuture_base
+            # Add the *actual* window sizes used in calculation too for clarity
+            download_settings["WindowSizePast_calculated"] = plot_ws_past
+            download_settings["WindowSizeFuture_calculated"] = plot_ws_future
+
 
             base_fn = os.path.splitext(uploaded_file.name)[0]
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
