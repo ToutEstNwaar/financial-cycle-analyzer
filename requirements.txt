@@ -3,3 +3,8 @@ pandas
 numpy
 matplotlib
 mplfinance
+ccxt
+sqlalchemy
+python-dateutil
+pytz
+openpyxl
