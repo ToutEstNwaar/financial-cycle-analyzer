@@ -1,14 +1,6 @@
 # streamlit_app.py
 
 import streamlit as st
-
-# MUST be first Streamlit command
-st.set_page_config(layout="wide", page_title="Cycle Indicator Analysis")
-
-# Suppress deprecation warning from streamlit-cookies-manager dependency
-import warnings
-warnings.filterwarnings("ignore", message=".*st.cache.*deprecated.*", category=DeprecationWarning)
-
 import sys
 import os
 import pandas as pd
@@ -19,7 +11,12 @@ import json
 import tempfile
 import math
 
+# MUST be first Streamlit command
+st.set_page_config(layout="wide", page_title="Cycle Indicator Analysis")
 
+# Suppress deprecation warning from streamlit-cookies-manager dependency
+import warnings
+warnings.filterwarnings("ignore", message=".*st.cache.*deprecated.*", category=DeprecationWarning)
 
 # --- Python Path Modification ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +31,12 @@ from indicator_logic import settings as ind_settings
 from indicator_logic.data_loader import load_ohlc_from_csv
 from indicator_logic.main_calculator import calculate_core_cycle_components, sum_composite_waves
 from utils.plotting import plot_indicator_lines, create_cycle_table
+
+# Add debug tracing AFTER all imports are complete
+print(f"🔍 DEBUG: App started/rerun at {datetime.datetime.now()}")
+print(f"🔍 DEBUG: Session state keys: {list(st.session_state.keys())}")
+print(f"🔍 DEBUG: run_calculation = {st.session_state.get('run_calculation', 'Not set')}")
+print(f"🔍 DEBUG: calculation_needed = {st.session_state.get('calculation_needed', 'Not set')}")
 
 st.title("Financial Cycle Indicator Analysis :chart_with_upwards_trend:")
 st.markdown("Upload OHLCV data (CSV). Analysis updates automatically as settings change.")
@@ -62,9 +65,15 @@ def get_settings_to_persist():
     # Data source settings
     data_source_keys = [
         'data_source', 'selected_exchange', 'selected_symbol', 'selected_timeframe',
-        'custom_symbol_input', 'live_data_is_stale'
+        'custom_symbol_input'
     ]
     for key in data_source_keys:
+        if key in st.session_state:
+            settings_to_save[key] = st.session_state[key]
+    
+    # Auto-recalculation settings
+    schedule_keys = ['schedule_enabled', 'recalc_bars']
+    for key in schedule_keys:
         if key in st.session_state:
             settings_to_save[key] = st.session_state[key]
     
@@ -95,24 +104,40 @@ def auto_load_settings_from_file():
             # Define the set of keys that are permissible to load
             valid_keys = set(_get_default_settings().keys()) | {
                 'data_source', 'selected_exchange', 'selected_symbol', 'selected_timeframe',
-                'custom_symbol_input', 'live_data_is_stale', 
-                'user_intended_WindowSizePast_base'
+                'custom_symbol_input', 
+                'user_intended_WindowSizePast_base', 'schedule_enabled', 'recalc_bars'
             }
 
             settings_loaded_count = 0
-            for key, value in loaded_settings.items():
-                if key == 'user_intended_WindowSizePast_base':
-                    st.session_state['user_intended_WindowSizePast_base'] = value
-                    st.session_state['WindowSizePast_base'] = value 
-                    settings_loaded_count += 1
-                elif key == 'custom_symbol_input':
-                    st.session_state['custom_symbol_input'] = str(value).strip().upper()
-                    settings_loaded_count += 1
-                elif key in valid_keys:
-                    st.session_state[key] = value
-                    settings_loaded_count += 1
+            significant_changes = 0  # Track only significant setting changes
             
-            if settings_loaded_count > 0:
+            for key, value in loaded_settings.items():
+                # Check if this is actually a new/changed value
+                current_value = st.session_state.get(key)
+                
+                if key == 'user_intended_WindowSizePast_base':
+                    if current_value != value:
+                        st.session_state['user_intended_WindowSizePast_base'] = value
+                        st.session_state['WindowSizePast_base'] = value 
+                        settings_loaded_count += 1
+                        significant_changes += 1
+                elif key == 'custom_symbol_input':
+                    processed_value = str(value).strip().upper()
+                    if current_value != processed_value:
+                        st.session_state['custom_symbol_input'] = processed_value
+                        settings_loaded_count += 1
+                        if processed_value:  # Only count as significant if not empty
+                            significant_changes += 1
+                elif key in valid_keys:
+                    if current_value != value:
+                        st.session_state[key] = value
+                        settings_loaded_count += 1
+                        # Only count certain keys as significant changes worth notifying about
+                        if key not in ['schedule_enabled', 'recalc_bars']:
+                            significant_changes += 1
+            
+            # Only show toast for significant changes (more than just schedule settings)
+            if significant_changes > 0:
                 st.toast(f"✅ Restored {settings_loaded_count} settings from previous session", icon="🔄")
                 
     except Exception as e:
@@ -157,6 +182,26 @@ def initialize_milestone3_components():
         st.session_state.live_data_is_stale = True  # Initially stale until first fetch
     if 'custom_symbol_input' not in st.session_state:
         st.session_state.custom_symbol_input = ""  # Initialize custom symbol input
+    
+    # Ensure live data freshness is maintained when data exists
+    if (st.session_state.data_source == 'live' and 
+        'live_data' in st.session_state and 
+        not st.session_state.live_data.empty and
+        not st.session_state.get('live_data_is_stale', True)):
+        # Data exists and is fresh - ensure it stays fresh
+        st.session_state.live_data_is_stale = False
+    
+    # Initialize calculation control state
+    if 'calculation_needed' not in st.session_state:
+        st.session_state.calculation_needed = True  # Initially need calculation
+    if 'run_calculation' not in st.session_state:
+        st.session_state.run_calculation = False  # Controls when to actually run calculation
+    
+    # Initialize auto-recalculation settings
+    if 'schedule_enabled' not in st.session_state:
+        st.session_state.schedule_enabled = False  # Auto-recalculation disabled by default
+    if 'recalc_bars' not in st.session_state:
+        st.session_state.recalc_bars = 1  # Default to recalculate every 1 new bar
 
 # --- Load Tradable Pairs Configuration ---
 def load_tradable_pairs(config_path="tradable_pairs.json"):
@@ -193,11 +238,190 @@ def mark_live_data_stale():
 def on_setting_change():
     """Callback for when any setting changes - auto-save settings"""
     auto_save_settings_to_file()
+    # Mark settings download data as needing refresh
+    st.session_state.settings_data_needs_refresh = True
 
 def mark_live_data_stale_and_save():
     """Mark live data as stale and auto-save settings"""
     mark_live_data_stale()
     auto_save_settings_to_file()
+    # Mark settings download data as needing refresh
+    st.session_state.settings_data_needs_refresh = True
+
+# Add new function to mark calculation as needed
+def mark_calculation_needed():
+    """Mark that calculation needs to be run when parameters change"""
+    st.session_state.calculation_needed = True
+
+def on_setting_change_with_calc_flag():
+    """Callback for when any setting changes - auto-save settings and mark calculation needed"""
+    auto_save_settings_to_file()
+    mark_calculation_needed()
+    # Mark settings download data as needing refresh
+    st.session_state.settings_data_needs_refresh = True
+
+def check_and_run_auto_recalculation():
+    """
+    Global function to check and execute auto-recalculation if needed.
+    This runs independently of analysis results display.
+    """
+    # Only run if auto-recalculation is enabled and we have live data
+    if not st.session_state.get('schedule_enabled', False):
+        return
+    
+    if st.session_state.data_source != 'live':
+        return
+    
+    # Debug: Show that the function is running
+    # st.write("🔍 DEBUG: Auto-recalc check running...")
+    
+    # Initialize schedule tracking
+    if 'schedule_info' not in st.session_state:
+        st.session_state.schedule_info = {}
+    
+    # Determine symbol and timeframe
+    symbol_for_db = st.session_state.selected_symbol
+    custom_input_processed = st.session_state.get("custom_symbol_input", "").strip().upper()
+    if custom_input_processed:
+        symbol_for_db = custom_input_processed
+    timeframe_for_db = st.session_state.selected_timeframe
+    
+    schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
+    is_scheduled = schedule_id in st.session_state.schedule_info
+    recalc_bars = st.session_state.get('recalc_bars', 1)
+    
+    # Auto-start scheduling when enabled
+    if not is_scheduled:
+        # Calculate next candle open time using centralized function
+        next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+        
+        # Store schedule info in session state for countdown
+        st.session_state.schedule_info[schedule_id] = {
+            'symbol': symbol_for_db,
+            'timeframe': timeframe_for_db,
+            'last_run': datetime.datetime.now(pytz.utc),
+            'next_run': next_candle_time,
+            'recalc_bars': recalc_bars
+        }
+        st.success(f"✅ Auto-recalculation scheduled for {symbol_for_db} every {recalc_bars} {timeframe_for_db} bar(s)")
+    
+    # Check if it's time to run
+    if is_scheduled:
+        schedule_info = st.session_state.schedule_info[schedule_id]
+        next_run = schedule_info['next_run']
+        now = datetime.datetime.now(pytz.utc)
+        
+        if now >= next_run:
+            # Time to run analysis
+            st.warning("🔄 Auto-recalculation triggered! Fetching new data...")
+            
+            try:
+                # Fetch new data
+                fetcher = CryptoDataFetcher(exchange_name=st.session_state.selected_exchange)
+                bars_to_fetch = max(5, recalc_bars + 2)
+                new_data = fetcher.fetch_ohlcv(
+                    symbol=symbol_for_db,
+                    timeframe=timeframe_for_db,
+                    limit=bars_to_fetch
+                )
+                
+                if not new_data.empty:
+                    # Merge with existing data if available
+                    if 'live_data' in st.session_state and not st.session_state.live_data.empty:
+                        existing_data = st.session_state.live_data.copy()
+                        combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+                        combined_data = combined_data.drop_duplicates(subset=['Date'], keep='last')
+                        combined_data = combined_data.sort_values('Date').reset_index(drop=True)
+                    else:
+                        # No existing data, use new data
+                        combined_data = new_data
+                    
+                    # Store in database
+                    db_success = st.session_state.db_manager.store_price_data(
+                        combined_data, 
+                        symbol_for_db, 
+                        timeframe_for_db
+                    )
+                    
+                    # Update session state
+                    st.session_state.live_data = combined_data
+                    st.session_state.ohlc_data_length_for_sliders = len(combined_data)
+                    st.session_state.live_data_is_stale = False
+                    
+                    # Calculate next run time
+                    next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                    schedule_info['last_run'] = now
+                    schedule_info['next_run'] = next_candle_time
+                    
+                    # Trigger cycle engine
+                    st.session_state.run_calculation = True
+                    st.session_state.calculation_needed = False
+                    auto_save_settings_to_file()
+                    
+                    st.success("✅ Auto-recalculation completed! New data fetched and analysis triggered.")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ No new data available for auto-recalculation")
+                    # Still update next run time
+                    next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                    schedule_info['next_run'] = next_candle_time
+                    
+            except Exception as e:
+                st.error(f"Auto-recalculation failed: {e}")
+                # Update next run time even if failed
+                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                schedule_info['next_run'] = next_candle_time
+
+def display_auto_recalc_status():
+    """Display auto-recalculation status and countdown if active"""
+    if not st.session_state.get('schedule_enabled', False):
+        return
+    
+    if st.session_state.data_source != 'live':
+        st.info("💡 Auto-recalculation only works with live data")
+        return
+    
+    # Get schedule info
+    symbol_for_db = st.session_state.selected_symbol
+    custom_input_processed = st.session_state.get("custom_symbol_input", "").strip().upper()
+    if custom_input_processed:
+        symbol_for_db = custom_input_processed
+    timeframe_for_db = st.session_state.selected_timeframe
+    
+    schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
+    
+    if schedule_id in st.session_state.schedule_info:
+        schedule_info = st.session_state.schedule_info[schedule_id]
+        next_run = schedule_info['next_run']
+        now = datetime.datetime.now(pytz.utc)
+        recalc_bars = schedule_info['recalc_bars']
+        
+        # Create countdown that auto-updates
+        @st.fragment(run_every="1s")
+        def countdown_fragment():
+            current_time = datetime.datetime.now(pytz.utc)
+            time_remaining = next_run - current_time
+            total_seconds = int(time_remaining.total_seconds())
+            
+            if total_seconds > 0:
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                
+                if hours > 0:
+                    countdown_text = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    countdown_text = f"{minutes:02d}:{seconds:02d}"
+                
+                st.info(f"⏰ **Next auto-analysis in:** {countdown_text}")
+                st.write(f"**Target:** When {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
+            else:
+                st.info("⏰ **Auto-analysis:** Triggering any moment now...")
+        
+        countdown_fragment()
+    else:
+        st.info("✅ Auto-recalculation enabled - waiting for initialization...")
+
 def get_next_candle_time(timeframe, bars_ahead=1):
     """
     Calculate when the next candle(s) will open based on current time and timeframe.
@@ -276,16 +500,44 @@ def render_sidebar():
 
     # Download Settings Button
     settings_to_download = get_settings_to_persist()
-    settings_json_string = json.dumps(settings_to_download, indent=4)
     
-    st.sidebar.download_button(
-        label="📥 Download Current Settings",
-        data=settings_json_string,
-        file_name=SETTINGS_FILENAME,
-        mime="application/json",
-        key="download_settings_btn",
-        help="Download your current settings as a JSON file"
-    )
+    print(f"🔍 DEBUG: Preparing settings download button")
+    print(f"🔍 DEBUG: settings_data_needs_refresh = {st.session_state.get('settings_data_needs_refresh', 'Not set')}")
+    
+    # Prepare settings download data once and store in session state
+    if 'settings_download_data' not in st.session_state or st.session_state.get('settings_data_needs_refresh', True):
+        print(f"🔍 DEBUG: Generating new settings download data")
+        settings_json_string = json.dumps(settings_to_download, indent=4)
+        st.session_state.settings_download_data = settings_json_string
+        st.session_state.settings_data_needs_refresh = False
+    else:
+        print(f"🔍 DEBUG: Using cached settings download data")
+
+    def settings_download_fragment():
+        print(f"🔍 DEBUG: Creating settings download button widget")
+        
+        # Store analysis state before download button (in case it causes rerun)
+        if st.session_state.get('run_calculation', False):
+            st.session_state['analysis_was_running'] = True
+        
+        downloaded = st.sidebar.download_button(
+            label="📥 Download Current Settings",
+            data=st.session_state.settings_download_data,
+            file_name=SETTINGS_FILENAME,
+            mime="application/json",
+            key="download_settings_btn",
+            help="Download your current settings as a JSON file",
+            use_container_width=True
+        )
+        
+        # If download was triggered, mark that we should preserve analysis results
+        if downloaded:
+            print(f"🔍 DEBUG: Settings download triggered - preserving analysis state")
+            st.session_state['preserve_analysis_results'] = True
+        
+        print(f"🔍 DEBUG: Settings download button widget created")
+
+    settings_download_fragment()
 
     # Upload Settings File
     uploaded_settings_file = st.sidebar.file_uploader(
@@ -305,7 +557,7 @@ def render_sidebar():
         options=["Upload File", "Live Crypto Data"],
         index=0 if st.session_state.data_source == 'file' else 1,
         key="data_source_radio",
-        on_change=on_setting_change
+        on_change=on_setting_change_with_calc_flag
     )
 
     # Update session state based on radio selection
@@ -431,7 +683,7 @@ def render_sidebar():
 
     st.sidebar.subheader("Input Data Source")
     source_options = ["Close", "Open", "High", "Low", "(H+L)/2", "(H+L+C)/3", "(O+H+L+C)/4", "(H+L+C+C)/4"]
-    st.sidebar.selectbox("Price Source", options=source_options, key="source_price_type", on_change=on_setting_change)
+    st.sidebar.selectbox("Price Source", options=source_options, key="source_price_type", on_change=on_setting_change_with_calc_flag)
 
     st.sidebar.subheader("General Settings")
 
@@ -469,6 +721,8 @@ def render_sidebar():
         st.session_state.WindowSizePast_base = st.session_state.WindowSizePast_base_slider_widget
         # Auto-save settings when user changes window size
         auto_save_settings_to_file()
+        # Mark settings download data as needing refresh
+        st.session_state.settings_data_needs_refresh = True
 
     st.sidebar.slider(
         "Past Window Size (Analysis Lookback)", # Label updated
@@ -497,7 +751,7 @@ def render_sidebar():
         max_value=500, # Fixed max as per user request
         step=1,
         key="MaxPer",
-        on_change=on_setting_change,
+        on_change=on_setting_change_with_calc_flag,
         help=(
             "Max cycle period to search for. Backend validation will ensure compatibility with "
             "'Past Window Size' and other settings. Error will be shown if incompatible."
@@ -511,7 +765,7 @@ def render_sidebar():
         max_value=1000, # Fixed max as per user request
         step=10,
         key="WindowSizeFuture_base", # Key remains _base
-        on_change=on_setting_change,
+        on_change=on_setting_change_with_calc_flag,
         help="Defines the base number of bars for the future wave projection. Actual projection length will be at least 2 * MaxPer."
     )
 
@@ -522,7 +776,7 @@ def render_sidebar():
         max_value=100, # Fixed practical UI limit
         step=1,
         key="BarToCalculate",
-        on_change=on_setting_change,
+        on_change=on_setting_change_with_calc_flag,
         help="Offset from the most recent end of the 'Past Window Size' for Goertzel analysis. Backend will validate against 'Past Window Size'."
     )
 
@@ -535,7 +789,7 @@ def render_sidebar():
         max_value=max(1, current_max_per_val_for_cycle_selection), 
         step=1,
         key="StartAtCycle",
-        on_change=on_setting_change
+        on_change=on_setting_change_with_calc_flag
     )
     st.sidebar.number_input(
         "Use Top Cycles (Count)",
@@ -543,7 +797,7 @@ def render_sidebar():
         max_value=max(1, current_max_per_val_for_cycle_selection),
         step=1,
         key="UseTopCycles",
-        on_change=on_setting_change
+        on_change=on_setting_change_with_calc_flag
     )
 
     st.sidebar.subheader("Source Price Processing")
@@ -551,42 +805,86 @@ def render_sidebar():
         ind_settings.NONE_SMTH_DT, ind_settings.ZLAGSMTH, ind_settings.HPSMTH,
         ind_settings.ZLAGSMTHDT, ind_settings.HPSMTHDT, ind_settings.LOG_ZLAG_REGRESSION_DT
     ]
-    st.sidebar.selectbox("Detrending/Smoothing Mode",options=detrend_mode_options,key="detrendornot",on_change=on_setting_change)
+    st.sidebar.selectbox("Detrending/Smoothing Mode",options=detrend_mode_options,key="detrendornot",on_change=on_setting_change_with_calc_flag)
 
     if st.session_state.detrendornot == ind_settings.ZLAGSMTH:
-        st.sidebar.slider("ZLMA Smooth Period", 1, 100, step=1, key="ZLMAsmoothPer")
+        st.sidebar.slider("ZLMA Smooth Period", 1, 100, step=1, key="ZLMAsmoothPer", on_change=on_setting_change_with_calc_flag)
     elif st.session_state.detrendornot == ind_settings.HPSMTH:
-        st.sidebar.slider("HPF Smoothing Period", 1, 100, step=1, key="HPsmoothPer")
+        st.sidebar.slider("HPF Smoothing Period", 1, 100, step=1, key="HPsmoothPer", on_change=on_setting_change_with_calc_flag)
     elif st.session_state.detrendornot == ind_settings.ZLAGSMTHDT:
-        st.sidebar.slider("ZLMA Detrend Fast Period", 1, 100, step=1, key="DT_ZLper1")
-        st.sidebar.slider("ZLMA Detrend Slow Period", 1, 200, step=1, key="DT_ZLper2")
+        st.sidebar.slider("ZLMA Detrend Fast Period", 1, 100, step=1, key="DT_ZLper1", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.slider("ZLMA Detrend Slow Period", 1, 200, step=1, key="DT_ZLper2", on_change=on_setting_change_with_calc_flag)
     elif st.session_state.detrendornot == ind_settings.HPSMTHDT:
-        st.sidebar.slider("HPF Detrend Fast Period", 1, 100, step=1, key="DT_HPper1")
-        st.sidebar.slider("HPF Detrend Slow Period", 1, 200, step=1, key="DT_HPper2")
+        st.sidebar.slider("HPF Detrend Fast Period", 1, 100, step=1, key="DT_HPper1", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.slider("HPF Detrend Slow Period", 1, 200, step=1, key="DT_HPper2", on_change=on_setting_change_with_calc_flag)
     elif st.session_state.detrendornot == ind_settings.LOG_ZLAG_REGRESSION_DT:
-        st.sidebar.slider("Log ZLR Smooth Period", 1, 50, step=1, key="DT_RegZLsmoothPer")
+        st.sidebar.slider("Log ZLR Smooth Period", 1, 50, step=1, key="DT_RegZLsmoothPer", on_change=on_setting_change_with_calc_flag)
 
     st.sidebar.subheader("Bartels Cycle Significance")
-    st.sidebar.checkbox("Filter with Bartels Test", key="FilterBartels")
+    st.sidebar.checkbox("Filter with Bartels Test", key="FilterBartels", on_change=on_setting_change_with_calc_flag)
     if st.session_state.FilterBartels:
-        st.sidebar.slider("Bartels: N Cycles", 1, 20, step=1, key="BartNoCycles")
-        st.sidebar.slider("Bartels: Smooth Per", 1, 20, step=1, key="BartSmoothPer")
-        st.sidebar.slider("Bartels: Sig Limit (%)", 0.0, 100.0, step=0.1, key="BartSigLimit")
-        st.sidebar.checkbox("Sort by Bartels Sig", key="SortBartels")
+        st.sidebar.slider("Bartels: N Cycles", 1, 20, step=1, key="BartNoCycles", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.slider("Bartels: Smooth Per", 1, 20, step=1, key="BartSmoothPer", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.slider("Bartels: Sig Limit (%)", 0.0, 100.0, step=0.1, key="BartSigLimit", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.checkbox("Sort by Bartels Sig", key="SortBartels", on_change=on_setting_change_with_calc_flag)
 
     st.sidebar.subheader("Miscellaneous Goertzel Settings")
-    st.sidebar.checkbox("Squared Amplitude", key="squaredAmp")
-    st.sidebar.checkbox("Use Addition for Phase", key="useAddition")
-    st.sidebar.checkbox("Use Cosine for Waves", key="useCosine")
-    st.sidebar.checkbox("Use Cycle Strength", key="UseCycleStrength")
-    st.sidebar.checkbox("Subtract Noise Cycles", key="SubtractNoise")
-    st.sidebar.checkbox("Use Specific Cycle List", key="UseCycleList")
+    st.sidebar.checkbox("Squared Amplitude", key="squaredAmp", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Use Addition for Phase", key="useAddition", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Use Cosine for Waves", key="useCosine", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Use Cycle Strength", key="UseCycleStrength", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Subtract Noise Cycles", key="SubtractNoise", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Use Specific Cycle List", key="UseCycleList", on_change=on_setting_change_with_calc_flag)
     if st.session_state.UseCycleList:
-        st.sidebar.number_input("C1 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle1")
-        st.sidebar.number_input("C2 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle2")
-        st.sidebar.number_input("C3 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle3")
-        st.sidebar.number_input("C4 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle4")
-        st.sidebar.number_input("C5 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle5")
+        st.sidebar.number_input("C1 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle1", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.number_input("C2 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle2", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.number_input("C3 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle3", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.number_input("C4 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle4", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.number_input("C5 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle5", on_change=on_setting_change_with_calc_flag)
+
+    # --- Auto-Recalculation Settings ---
+    st.sidebar.subheader("⏰ Auto-Recalculation")
+    schedule_enabled = st.sidebar.checkbox("Enable Auto-Recalculation", key="schedule_enabled", on_change=on_setting_change, help="Automatically run analysis when new candles are available")
+    if schedule_enabled:
+        recalc_bars = st.sidebar.selectbox(
+            "Recalculate Every N Bars",
+            options=[1, 2, 3, 5, 10],
+            format_func=lambda x: f"{x} new bar{'s' if x > 1 else ''}",
+            key="recalc_bars",
+            on_change=on_setting_change,
+            help="How many new bars to wait before triggering recalculation"
+        )
+        st.sidebar.info("💡 Only works with live data. Engine runs when new candles open.")
+
+    # --- Run Cycle Engine Button ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🚀 Run Analysis")
+    
+    # Show calculation status
+    has_data = (uploaded_file is not None) or (st.session_state.data_source == 'live' and 'live_data' in st.session_state and not st.session_state.live_data.empty)
+    
+    if st.session_state.get('calculation_needed', True):
+        status_message = "⚠️ Parameters changed - calculation needed"
+        status_color = "orange"
+    else:
+        status_message = "✅ Results up to date"
+        status_color = "green"
+    
+    st.sidebar.markdown(f"**Status:** :{status_color}[{status_message}]")
+    
+    # Run button
+    run_button_disabled = not has_data
+    run_button_help = "Load data first to enable analysis" if run_button_disabled else "Run cycle analysis with current parameters"
+    
+    if st.sidebar.button(
+        "🔄 Run Cycle Engine", 
+        disabled=run_button_disabled,
+        help=run_button_help,
+        key="run_cycle_engine_btn",
+        type="primary"
+    ):
+        st.session_state.run_calculation = True
+        st.session_state.calculation_needed = False
 
     # --- Sidebar Footer ---
     st.sidebar.markdown("---")
@@ -726,6 +1024,9 @@ def load_and_preview_data(uploaded_file_obj):
 # --- Analysis Results Display Function ---
 def display_analysis_results(current_ohlc_data, current_data_source_name):
     """Display analysis results with downloads, database management, and scheduling"""
+    print(f"🔍 DEBUG: display_analysis_results() called for {current_data_source_name}")
+    print(f"🔍 DEBUG: Data length: {len(current_ohlc_data) if current_ohlc_data is not None else 'None'}")
+    
     core_calc_arg_keys = [
         "source_price_type", "MaxPer", "WindowSizePast_base", "WindowSizeFuture_base",
         "detrendornot", "DT_ZLper1", "DT_ZLper2", "DT_HPper1", "DT_HPper2",
@@ -807,8 +1108,35 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                     plot_ws_future = full_results.get('current_WindowSizeFuture', st.session_state.WindowSizeFuture_base)
                     analysis_sample_size = full_results.get('calculated_SampleSize', st.session_state.WindowSizePast_base)
 
+                    # DEBUG: Trace what's being passed to plotting
+                    print(f"DEBUG APP: About to call plot_indicator_lines with:")
+                    print(f"  full_results keys: {list(full_results.keys())}")
+                    print(f"  calc_bar_idx: {calc_bar_idx}")
+                    print(f"  plot_ws_past: {plot_ws_past}, plot_ws_future: {plot_ws_future}")
+                    print(f"  analysis_sample_size: {analysis_sample_size}")
+                    
+                    past_wave_from_results = full_results.get('goertzel_past_wave')
+                    future_wave_from_results = full_results.get('goertzel_future_wave')
+                    print(f"  past_wave_from_results: {type(past_wave_from_results)}, length: {len(past_wave_from_results) if past_wave_from_results is not None else 'None'}")
+                    print(f"  future_wave_from_results: {type(future_wave_from_results)}, length: {len(future_wave_from_results) if future_wave_from_results is not None else 'None'}")
+                    
+                    if past_wave_from_results is not None and len(past_wave_from_results) > 0:
+                        print(f"  past_wave stats: min={np.min(past_wave_from_results):.6f}, max={np.max(past_wave_from_results):.6f}")
+                        # Check if all values are the same (would cause single line)
+                        unique_values = np.unique(past_wave_from_results)
+                        print(f"  past_wave unique values count: {len(unique_values)}")
+                        if len(unique_values) <= 3:
+                            print(f"  past_wave unique values: {unique_values}")
+                    
+                    if future_wave_from_results is not None and len(future_wave_from_results) > 0:
+                        print(f"  future_wave stats: min={np.min(future_wave_from_results):.6f}, max={np.max(future_wave_from_results):.6f}")
+                        unique_values = np.unique(future_wave_from_results)
+                        print(f"  future_wave unique values count: {len(unique_values)}")
+                        if len(unique_values) <= 3:
+                            print(f"  future_wave unique values: {unique_values}")
+
                     fig = plot_indicator_lines(
-                        ohlc_data, 
+                        current_ohlc_data, 
                         full_results.get('goertzel_past_wave'), 
                         full_results.get('goertzel_future_wave'),
                         calc_bar_idx, 
@@ -884,25 +1212,37 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                     except Exception as e:
                         st.warning(f"⚠️ Database storage failed: {e}")
                     
-                    # Download options
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # JSON download (original functionality)
-                        json_dl_data = {
-                            'timestamp': datetime.datetime.now().isoformat(),
-                            'run_id': run_id,
-                            'data_source': st.session_state.data_source,
-                            'symbol': symbol_for_db,
-                            'timeframe': timeframe_for_db,
-                            'settings_used': {},
-                            'cycle_table_data': cycle_table_df.reset_index().to_dict(orient='records') if not cycle_table_df.empty else [],
-                            'num_cycles': full_results.get('number_of_cycles', 0),
-                            'past_wave_data': past_wave_data_list,
-                            'future_wave_data': future_wave_data_list
-                        }
+                    # Download Options (JSON and CSV)
+                    with st.expander("📥 Download Analysis Results", expanded=False):
+                        col1, col2, col3 = st.columns(3)
                         
-                        try:
+                        print(f"🔍 DEBUG: Preparing analysis download buttons")
+                        
+                        # Prepare download data once per analysis run and store in session state
+                        download_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                        download_key = f"download_data_{run_id}"
+                        
+                        print(f"🔍 DEBUG: download_key = {download_key}")
+                        print(f"🔍 DEBUG: download_key in session_state = {download_key in st.session_state}")
+                        
+                        if download_key not in st.session_state:
+                            print(f"🔍 DEBUG: Generating new analysis download data for {download_key}")
+                            # Prepare JSON download data
+                            json_dl_data = {
+                                "analysis_metadata": {
+                                    "symbol": symbol_for_db,
+                                    "timeframe": timeframe_for_db,
+                                    "timestamp": datetime.datetime.now().isoformat(),
+                                    "run_id": run_id,
+                                    "data_length": len(current_ohlc_data)
+                                },
+                                "cycle_results": cycle_results,
+                                "past_wave": past_wave_data_list,
+                                "future_wave": future_wave_data_list,
+                                "price_data": current_ohlc_data.to_dict('records')
+                            }
+                            
+                            # Prepare serializable settings
                             serializable_settings = {}
                             for k, v in download_settings.items():
                                 if isinstance(v, np.integer):
@@ -917,35 +1257,198 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                     serializable_settings[k] = v
                             json_dl_data['settings_used'] = serializable_settings
                             
-                            json_bytes = st.session_state.data_exporter.export_to_streamlit_download(
-                                json_dl_data, f"{symbol_for_db}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json", 'json'
-                            )
-                            st.download_button(
-                                "📄 Download JSON",
-                                json_bytes,
-                                f"{symbol_for_db}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                                "application/json",
-                                key="dl_json_btn"
-                            )
-                        except Exception as e:
-                            st.error(f"JSON preparation error: {e}")
-                    
-                    with col2:
-                        # CSV download for cycle results
-                        if not cycle_table_df.empty:
-                            try:
-                                csv_bytes = st.session_state.data_exporter.export_to_streamlit_download(
-                                    cycle_table_df, f"{symbol_for_db}_cycles_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", 'csv'
-                                )
-                                st.download_button(
-                                    "📊 Download Cycles CSV",
-                                    csv_bytes,
-                                    f"{symbol_for_db}_cycles_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    "text/csv",
-                                    key="dl_csv_btn"
-                                )
-                            except Exception as e:
-                                st.error(f"CSV preparation error: {e}")
+                            # Prepare combined price + cycle data CSV
+                            combined_df = current_ohlc_data.reset_index().copy()
+                            
+                            # Initialize Cycle column with NaN
+                            combined_df['Cycle'] = np.nan
+                            
+                            # Get cycle periods from analysis results
+                            cycle_periods = []
+                            if not cycle_table_df.empty:
+                                cycle_periods = cycle_table_df['Period'].tolist()
+                            
+                            # Add past wave direction changes with cycle periods
+                            if len(past_wave_data_list) > 1:
+                                # Find direction changes in past wave (similar to plotting logic)
+                                direction_changes = []
+                                for i in range(len(past_wave_data_list) - 1):
+                                    current_direction = 'up' if past_wave_data_list[i] > past_wave_data_list[i + 1] else 'down'
+                                    if i == 0:
+                                        prev_direction = current_direction
+                                    else:
+                                        prev_direction = 'up' if past_wave_data_list[i-1] > past_wave_data_list[i] else 'down'
+                                    
+                                    # Mark direction change
+                                    if prev_direction != current_direction:
+                                        direction_changes.append(i)
+                                
+                                # Map direction changes to price data bars and assign dominant cycle
+                                past_wave_length = len(past_wave_data_list)
+                                if len(combined_df) >= past_wave_length:
+                                    data_start_idx = len(combined_df) - past_wave_length
+                                    
+                                    for change_idx in direction_changes:
+                                        price_bar_idx = data_start_idx + change_idx
+                                        if 0 <= price_bar_idx < len(combined_df):
+                                            # Assign the dominant cycle period (first/strongest)
+                                            if cycle_periods:
+                                                combined_df.loc[price_bar_idx, 'Cycle'] = cycle_periods[0]
+                            
+                            # Add future projections if available
+                            if len(future_wave_data_list) > 0:
+                                # Create future rows with estimated dates
+                                last_date = combined_df['Date'].iloc[-1] if not combined_df.empty else datetime.datetime.now()
+                                if isinstance(last_date, str):
+                                    last_date = pd.to_datetime(last_date)
+                                
+                                # Determine time increment based on timeframe
+                                timeframe = timeframe_for_db
+                                if timeframe == '5m':
+                                    time_delta = datetime.timedelta(minutes=5)
+                                elif timeframe == '1h':
+                                    time_delta = datetime.timedelta(hours=1)
+                                elif timeframe == '4h':
+                                    time_delta = datetime.timedelta(hours=4)
+                                elif timeframe == '1d':
+                                    time_delta = datetime.timedelta(days=1)
+                                else:
+                                    time_delta = datetime.timedelta(days=1)  # Default
+                                
+                                # Find direction changes in future wave
+                                future_direction_changes = []
+                                if len(future_wave_data_list) > 1:
+                                    for i in range(len(future_wave_data_list) - 1):
+                                        current_direction = 'up' if future_wave_data_list[i] > future_wave_data_list[i + 1] else 'down'
+                                        if i == 0:
+                                            prev_direction = current_direction
+                                        else:
+                                            prev_direction = 'up' if future_wave_data_list[i-1] > future_wave_data_list[i] else 'down'
+                                        
+                                        # Mark direction change
+                                        if prev_direction != current_direction:
+                                            future_direction_changes.append(i)
+                                
+                                # Create future projection rows
+                                future_rows = []
+                                for i, cycle_value in enumerate(future_wave_data_list):
+                                    future_date = last_date + (time_delta * (i + 1))
+                                    
+                                    # Check if this bar has a direction change
+                                    cycle_period = np.nan
+                                    if i in future_direction_changes and cycle_periods:
+                                        cycle_period = cycle_periods[0]  # Use dominant cycle
+                                    
+                                    future_rows.append({
+                                        'Date': future_date,
+                                        'Open': None,
+                                        'High': None, 
+                                        'Low': None,
+                                        'Close': None,
+                                        'Volume': None,
+                                        'Cycle': cycle_period
+                                    })
+                                
+                                # Add future rows to dataframe
+                                future_df = pd.DataFrame(future_rows)
+                                combined_df = pd.concat([combined_df, future_df], ignore_index=True)
+                            
+                            # Store prepared data in session state
+                            st.session_state[download_key] = {
+                                'json_data': json_dl_data,
+                                'csv_data': cycle_table_df.copy() if not cycle_table_df.empty else pd.DataFrame(),
+                                'combined_data': combined_df,
+                                'timestamp': download_timestamp,
+                                'symbol': symbol_for_db
+                            }
+                            print(f"🔍 DEBUG: Stored new analysis download data for {download_key}")
+                        else:
+                            print(f"🔍 DEBUG: Using cached analysis download data for {download_key}")
+                        
+                        def analysis_download_fragment():
+                            print(f"🔍 DEBUG: Creating analysis download button widgets")
+                            download_data = st.session_state[download_key]
+                            
+                            # Store analysis state before download buttons (in case they cause rerun)
+                            if st.session_state.get('run_calculation', False):
+                                st.session_state['analysis_was_running'] = True
+                            
+                            with col1:
+                                # JSON download
+                                try:
+                                    print(f"🔍 DEBUG: Creating JSON download button")
+                                    json_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                                        download_data['json_data'], 
+                                        f"{download_data['symbol']}_analysis_{download_data['timestamp']}.json", 
+                                        'json'
+                                    )
+                                    json_downloaded = st.download_button(
+                                        "📄 Download JSON",
+                                        json_bytes,
+                                        f"{download_data['symbol']}_analysis_{download_data['timestamp']}.json",
+                                        "application/json",
+                                        key="dl_json_btn",
+                                        use_container_width=True
+                                    )
+                                    if json_downloaded:
+                                        print(f"🔍 DEBUG: JSON download triggered - preserving analysis state")
+                                        st.session_state['preserve_analysis_results'] = True
+                                    print(f"🔍 DEBUG: JSON download button created")
+                                except Exception as e:
+                                    st.error(f"JSON preparation error: {e}")
+                            
+                            with col2:
+                                # CSV download for cycle results
+                                if not download_data['csv_data'].empty:
+                                    try:
+                                        print(f"🔍 DEBUG: Creating CSV download button")
+                                        csv_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                                            download_data['csv_data'], 
+                                            f"{download_data['symbol']}_cycles_{download_data['timestamp']}.csv", 
+                                            'csv'
+                                        )
+                                        csv_downloaded = st.download_button(
+                                            "📊 Download Cycles CSV",
+                                            csv_bytes,
+                                            f"{download_data['symbol']}_cycles_{download_data['timestamp']}.csv",
+                                            "text/csv",
+                                            key="dl_csv_btn",
+                                            use_container_width=True
+                                        )
+                                        if csv_downloaded:
+                                            print(f"🔍 DEBUG: CSV download triggered - preserving analysis state")
+                                            st.session_state['preserve_analysis_results'] = True
+                                        print(f"🔍 DEBUG: CSV download button created")
+                                    except Exception as e:
+                                        st.error(f"CSV preparation error: {e}")
+                            
+                            with col3:
+                                # Combined price + cycle data download
+                                try:
+                                    print(f"🔍 DEBUG: Creating combined CSV download button")
+                                    combined_csv_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                                        download_data['combined_data'], 
+                                        f"{download_data['symbol']}_combined_{download_data['timestamp']}.csv", 
+                                        'csv'
+                                    )
+                                    combined_downloaded = st.download_button(
+                                        "📈 Download Combined CSV",
+                                        combined_csv_bytes,
+                                        f"{download_data['symbol']}_combined_{download_data['timestamp']}.csv",
+                                        "text/csv",
+                                        key="dl_combined_btn",
+                                        use_container_width=True,
+                                        help="Download price data with cycle wave values"
+                                    )
+                                    if combined_downloaded:
+                                        print(f"🔍 DEBUG: Combined CSV download triggered - preserving analysis state")
+                                        st.session_state['preserve_analysis_results'] = True
+                                    print(f"🔍 DEBUG: Combined CSV download button created")
+                                except Exception as e:
+                                    st.error(f"Combined CSV preparation error: {e}")
+                            print(f"🔍 DEBUG: Analysis download button widgets creation completed")
+                        
+                        analysis_download_fragment()
                     
                     # Database management section
                     with st.expander("🗄️ Database Management", expanded=False):
@@ -988,74 +1491,34 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                 st.write(f"• Current run: {run_id}")
                                 st.write("• Database: financial_cycle_analyzer.db")
                     
-                    # Scheduling section
-                    with st.expander("⏰ Analysis Scheduling", expanded=False):
-                        st.write("**Automatic Recalculation**")
-                        st.info("💡 Recalculation works by checking for new bars every N timeframe intervals. For example, if timeframe is 5m and N=1, it checks every 5 minutes for new data.")
+                    # Initialize schedule tracking in session state for auto-recalculation
+                    if 'schedule_info' not in st.session_state:
+                        st.session_state.schedule_info = {}
+                    
+                    # Only handle scheduling logic if auto-recalculation is enabled
+                    if st.session_state.get('schedule_enabled', False):
+                        schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
+                        is_scheduled = schedule_id in st.session_state.schedule_info
+                        recalc_bars = st.session_state.get('recalc_bars', 1)
                         
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            schedule_enabled = st.checkbox("Enable Auto-Recalculation", key="schedule_enabled")
-                            if schedule_enabled:
-                                recalc_bars = st.selectbox(
-                                    "Recalculate Every N Bars",
-                                    options=[1, 2, 3, 5, 10],
-                                    format_func=lambda x: f"{x} new bar{'s' if x > 1 else ''}",
-                                    key="recalc_bars"
-                                )
-                                
-                                # Use the centralized get_next_candle_time function
-                                
-                                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                                time_until_next = next_candle_time - datetime.datetime.now(pytz.utc)
-                                
-                                if time_until_next.total_seconds() < 60:
-                                    interval_text = f"{int(time_until_next.total_seconds())} seconds"
-                                elif time_until_next.total_seconds() < 3600:
-                                    minutes = int(time_until_next.total_seconds() // 60)
-                                    interval_text = f"{minutes} minute{'s' if minutes > 1 else ''}"
-                                elif time_until_next.total_seconds() < 86400:
-                                    hours = int(time_until_next.total_seconds() // 3600)
-                                    interval_text = f"{hours} hour{'s' if hours > 1 else ''}"
-                                else:
-                                    days = int(time_until_next.total_seconds() // 86400)
-                                    interval_text = f"{days} day{'s' if days > 1 else ''}"
-                                
-                                st.write(f"⏱️ **Next Update:** When {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
-                                st.write(f"🕐 **Next Candle Opens:** {next_candle_time.strftime('%H:%M:%S')} (in {interval_text})")
+                        # Auto-start scheduling when enabled
+                        if not is_scheduled:
+                            # Calculate next candle open time using centralized function
+                            next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                            
+                            # Store schedule info in session state for countdown
+                            st.session_state.schedule_info[schedule_id] = {
+                                'symbol': symbol_for_db,
+                                'timeframe': timeframe_for_db,
+                                'last_run': datetime.datetime.now(pytz.utc),
+                                'next_run': next_candle_time,
+                                'settings': download_settings.copy(),
+                                'recalc_bars': recalc_bars
+                            }
                         
-                        with col2:
-                            # Initialize schedule tracking in session state
-                            if 'schedule_info' not in st.session_state:
-                                st.session_state.schedule_info = {}
-                            
-                            schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
-                            is_scheduled = schedule_id in st.session_state.schedule_info
-                            
-                            # Auto-start/stop scheduling based on checkbox
-                            if schedule_enabled and not is_scheduled:
-                                # Calculate next candle open time using centralized function
-                                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                                
-                                # Store schedule info in session state for countdown
-                                st.session_state.schedule_info[schedule_id] = {
-                                    'symbol': symbol_for_db,
-                                    'timeframe': timeframe_for_db,
-                                    'last_run': datetime.datetime.now(pytz.utc),
-                                    'next_run': next_candle_time,
-                                    'settings': download_settings.copy(),
-                                    'recalc_bars': recalc_bars
-                                }
-                                st.success(f"✅ Auto-scheduling enabled: next update when {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
-                                st.rerun()
-                            
-                            elif not schedule_enabled and is_scheduled:
-                                # Auto-stop when checkbox is unchecked
-                                del st.session_state.schedule_info[schedule_id]
-                                st.success("✅ Auto-scheduling disabled")
-                                st.rerun()
-                            
-                            elif is_scheduled:
+                        # Show scheduling status in an info box
+                        with st.expander("⏰ Auto-Recalculation Status", expanded=False):
+                            if is_scheduled:
                                 schedule_info = st.session_state.schedule_info[schedule_id]
                                 
                                 # Create countdown fragment that auto-updates
@@ -1133,7 +1596,7 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                                             else:
                                                                 st.warning(f"Auto-recalc: Fetched initial historical dataset ({len(full_historical_data)} bars) but failed to store in database")
                                                         else:
-                                                            # Full fetch failed, fall back to small data as last resort
+                                                            # Full fetch failed, fall back to small incremental data as last resort
                                                             st.warning("Auto-recalc: Full historical fetch returned no data. Using incremental data as fallback.")
                                                             st.session_state.live_data = new_data
                                                             st.session_state.ohlc_data_length_for_sliders = len(new_data)
@@ -1151,6 +1614,11 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                                 schedule_info['last_run'] = now
                                                 schedule_info['next_run'] = next_candle_time
                                                 
+                                                # Set flag to trigger cycle engine and auto-save settings
+                                                st.session_state.run_calculation = True
+                                                st.session_state.calculation_needed = False
+                                                auto_save_settings_to_file()
+                                                
                                                 st.success("✅ Scheduled analysis completed! New data fetched.")
                                                 st.rerun()  # Trigger full app rerun to update analysis
                                             else:
@@ -1158,7 +1626,7 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                                 # Still update next run time to next candle
                                                 next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
                                                 schedule_info['next_run'] = next_candle_time
-                                                
+                                        
                                         except Exception as e:
                                             st.error(f"Scheduled analysis failed: {e}")
                                             # Update next run time to next candle even if failed
@@ -1180,20 +1648,32 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                                             else:
                                                 countdown_text = f"{minutes:02d}:{seconds:02d}"
                                             
-                                            st.write(f"⏰ **Next run in:** {countdown_text}")
+                                            st.info(f"⏰ **Next analysis in:** {countdown_text}")
+                                            st.write(f"**Next Update:** When {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
                                         else:
-                                            st.write("⏰ **Next run:** Any moment now...")
+                                            st.info("⏰ **Next analysis:** Any moment now...")
                                 
                                 # Call the auto-updating countdown fragment
                                 countdown_display()
-                            
-                            # Show active schedules
-                            if st.session_state.schedule_info:
-                                st.write(f"**Active Schedules:** {len(st.session_state.schedule_info)}")
-                                for sched_id, info in st.session_state.schedule_info.items():
-                                    st.write(f"• {info['symbol']} ({info['timeframe']}) - Every {info['recalc_bars']} bar(s)")
+                            else:
+                                st.info("✅ Auto-recalculation enabled - waiting for scheduling to initialize...")
+                    
+                    else:
+                        # Auto-recalculation disabled - clean up any existing schedules
+                        if st.session_state.schedule_info:
+                            schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
+                            if schedule_id in st.session_state.schedule_info:
+                                del st.session_state.schedule_info[schedule_id]
 
 # --- Main App Flow ---
+# Handle download-triggered reruns - restore analysis state
+if st.session_state.get('preserve_analysis_results', False):
+    print(f"🔍 DEBUG: Restoring analysis state after download-triggered rerun")
+    st.session_state.run_calculation = True  # Ensure analysis results are shown
+    st.session_state.calculation_needed = False  # Results are up to date
+    # Clear the preservation flag
+    del st.session_state['preserve_analysis_results']
+
 # Process uploaded settings file BEFORE rendering sidebar to avoid widget conflicts
 uploaded_settings_file = st.session_state.get('upload_settings_widget')
 if uploaded_settings_file is not None:
@@ -1204,8 +1684,8 @@ if uploaded_settings_file is not None:
         # This should be consistent with get_settings_to_persist()
         valid_keys = set(_get_default_settings().keys()) | {
             'data_source', 'selected_exchange', 'selected_symbol', 'selected_timeframe',
-            'custom_symbol_input', 'live_data_is_stale', 
-            'user_intended_WindowSizePast_base'  # If you persist this
+            'custom_symbol_input', 
+            'user_intended_WindowSizePast_base', 'schedule_enabled', 'recalc_bars'
         }
 
         settings_applied_count = 0
@@ -1244,9 +1724,43 @@ uploaded_file = render_sidebar()
 # Call the data loading and preview function
 ohlc_data, data_source_name = load_and_preview_data(uploaded_file)
 
-# Continue with analysis if data is available
+# Check and run auto-recalculation (runs globally, independent of analysis results)
+check_and_run_auto_recalculation()
+
+# Display auto-recalculation status if enabled
+if st.session_state.get('schedule_enabled', False):
+    with st.expander("⏰ Auto-Recalculation Status", expanded=False):
+        display_auto_recalc_status()
+
+# Show "Run Cycle Engine" instruction when data is loaded but calculation hasn't been run
 if ohlc_data is not None and not ohlc_data.empty:
-    display_analysis_results(ohlc_data, data_source_name)
+    print(f"🔍 DEBUG: Data available, checking run_calculation flag")
+    print(f"🔍 DEBUG: run_calculation = {st.session_state.get('run_calculation', False)}")
+    
+    if not st.session_state.get('run_calculation', False):
+        # Data is available but user hasn't clicked "Run Cycle Engine" yet
+        print(f"🔍 DEBUG: Showing data loaded message (not running analysis)")
+        st.info("📊 **Data loaded successfully!** Click '🔄 Run Cycle Engine' in the sidebar to start analysis.")
+        
+        # Show basic data info
+        st.write(f"**Data Source:** {data_source_name}")
+        st.write(f"**Rows:** {len(ohlc_data):,}")
+        if hasattr(ohlc_data.index, 'min'):
+            st.write(f"**Date Range:** {ohlc_data.index.min()} to {ohlc_data.index.max()}")
+    else:
+        # User clicked "Run Cycle Engine" - proceed with analysis
+        print(f"🔍 DEBUG: Running analysis because run_calculation = True")
+        display_analysis_results(ohlc_data, data_source_name)
+        # Reset the run_calculation flag after displaying results
+        print(f"🔍 DEBUG: Resetting run_calculation flag to False")
+        st.session_state.run_calculation = False
+else:
+    print(f"🔍 DEBUG: No data available for analysis")
+    print(f"🔍 DEBUG: ohlc_data is None: {ohlc_data is None}")
+    if ohlc_data is not None:
+        print(f"🔍 DEBUG: ohlc_data.empty: {ohlc_data.empty}")
+
+print(f"🔍 DEBUG: App execution completed")
 
 # Clean up session state when no data is available
 if st.session_state.data_source == 'file' and uploaded_file is None:
