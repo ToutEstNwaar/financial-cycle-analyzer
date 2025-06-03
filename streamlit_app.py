@@ -202,6 +202,12 @@ def initialize_milestone3_components():
         st.session_state.schedule_enabled = False  # Auto-recalculation disabled by default
     if 'recalc_bars' not in st.session_state:
         st.session_state.recalc_bars = 1  # Default to recalculate every 1 new bar
+    
+    # Initialize Group 2 wave summation control state
+    if 'rerun_wave_summation' not in st.session_state:
+        st.session_state.rerun_wave_summation = False  # Controls when to re-run wave summation
+    if 'cached_core_components_output' not in st.session_state:
+        st.session_state.cached_core_components_output = None  # Stores core components for re-use
 
 # --- Load Tradable Pairs Configuration ---
 def load_tradable_pairs(config_path="tradable_pairs.json"):
@@ -227,6 +233,9 @@ if 'tradable_pairs_list' not in st.session_state:
 # Initialize settings and components
 initialize_settings_in_session_state()
 initialize_milestone3_components()
+
+# Load tradable pairs
+st.session_state.tradable_pairs_list = load_tradable_pairs()
 
 
 
@@ -259,6 +268,43 @@ def on_setting_change_with_calc_flag():
     mark_calculation_needed()
     # Mark settings download data as needing refresh
     st.session_state.settings_data_needs_refresh = True
+    # Clear all cached items related to a specific analysis result
+    keys_to_clear = [
+        'cached_fig_for_display', 'cached_table_for_display', 'cached_plot_timestamp',
+        'cached_run_id_for_downloads', 'cached_symbol_for_db_for_downloads', 
+        'cached_timeframe_for_db_for_downloads', 'cached_cycle_results_for_downloads',
+        'cached_wave_data_for_downloads', 'cached_download_settings_for_downloads',
+        'cached_download_timestamp', 'cached_json_filename', 'cached_json_download_bytes',
+        'cached_cycles_csv_filename', 'cached_cycles_csv_download_bytes',
+        'cached_combined_csv_filename', 'cached_combined_csv_download_bytes',
+        'cached_db_stats_display', 'cached_recent_runs_display',
+        'cached_core_components_output'  # Clear core components when Group 1 settings change
+    ]
+    for key_to_clear in keys_to_clear:
+        if key_to_clear in st.session_state:
+            del st.session_state[key_to_clear]
+
+def on_group2_setting_change():
+    """Callback for when Group 2 settings change - auto-save settings and trigger wave summation re-run"""
+    auto_save_settings_to_file()
+    # Set flag to trigger wave summation re-run
+    st.session_state.rerun_wave_summation = True
+    # Mark settings download data as needing refresh
+    st.session_state.settings_data_needs_refresh = True
+    # Clear cached items related to display as these will need to be regenerated
+    keys_to_clear = [
+        'cached_fig_for_display', 'cached_table_for_display', 'cached_plot_timestamp',
+        'cached_run_id_for_downloads', 'cached_symbol_for_db_for_downloads', 
+        'cached_timeframe_for_db_for_downloads', 'cached_cycle_results_for_downloads',
+        'cached_wave_data_for_downloads', 'cached_download_settings_for_downloads',
+        'cached_download_timestamp', 'cached_json_filename', 'cached_json_download_bytes',
+        'cached_cycles_csv_filename', 'cached_cycles_csv_download_bytes',
+        'cached_combined_csv_filename', 'cached_combined_csv_download_bytes',
+        'cached_db_stats_display', 'cached_recent_runs_display'
+    ]
+    for key_to_clear in keys_to_clear:
+        if key_to_clear in st.session_state:
+            del st.session_state[key_to_clear]
 
 def check_and_run_auto_recalculation():
     """
@@ -530,10 +576,9 @@ def render_sidebar():
             use_container_width=True
         )
         
-        # If download was triggered, mark that we should preserve analysis results
+        # No need to set preserve_analysis_results flag anymore
         if downloaded:
-            print(f"🔍 DEBUG: Settings download triggered - preserving analysis state")
-            st.session_state['preserve_analysis_results'] = True
+            print(f"🔍 DEBUG: Settings download triggered")
         
         print(f"🔍 DEBUG: Settings download button widget created")
 
@@ -765,7 +810,7 @@ def render_sidebar():
         max_value=1000, # Fixed max as per user request
         step=10,
         key="WindowSizeFuture_base", # Key remains _base
-        on_change=on_setting_change_with_calc_flag,
+        on_change=on_group2_setting_change,
         help="Defines the base number of bars for the future wave projection. Actual projection length will be at least 2 * MaxPer."
     )
 
@@ -789,7 +834,7 @@ def render_sidebar():
         max_value=max(1, current_max_per_val_for_cycle_selection), 
         step=1,
         key="StartAtCycle",
-        on_change=on_setting_change_with_calc_flag
+        on_change=on_group2_setting_change
     )
     st.sidebar.number_input(
         "Use Top Cycles (Count)",
@@ -797,7 +842,7 @@ def render_sidebar():
         max_value=max(1, current_max_per_val_for_cycle_selection),
         step=1,
         key="UseTopCycles",
-        on_change=on_setting_change_with_calc_flag
+        on_change=on_group2_setting_change
     )
 
     st.sidebar.subheader("Source Price Processing")
@@ -833,14 +878,14 @@ def render_sidebar():
     st.sidebar.checkbox("Use Addition for Phase", key="useAddition", on_change=on_setting_change_with_calc_flag)
     st.sidebar.checkbox("Use Cosine for Waves", key="useCosine", on_change=on_setting_change_with_calc_flag)
     st.sidebar.checkbox("Use Cycle Strength", key="UseCycleStrength", on_change=on_setting_change_with_calc_flag)
-    st.sidebar.checkbox("Subtract Noise Cycles", key="SubtractNoise", on_change=on_setting_change_with_calc_flag)
-    st.sidebar.checkbox("Use Specific Cycle List", key="UseCycleList", on_change=on_setting_change_with_calc_flag)
+    st.sidebar.checkbox("Subtract Noise Cycles", key="SubtractNoise", on_change=on_group2_setting_change)
+    st.sidebar.checkbox("Use Specific Cycle List", key="UseCycleList", on_change=on_group2_setting_change)
     if st.session_state.UseCycleList:
-        st.sidebar.number_input("C1 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle1", on_change=on_setting_change_with_calc_flag)
-        st.sidebar.number_input("C2 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle2", on_change=on_setting_change_with_calc_flag)
-        st.sidebar.number_input("C3 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle3", on_change=on_setting_change_with_calc_flag)
-        st.sidebar.number_input("C4 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle4", on_change=on_setting_change_with_calc_flag)
-        st.sidebar.number_input("C5 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle5", on_change=on_setting_change_with_calc_flag)
+        st.sidebar.number_input("C1 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle1", on_change=on_group2_setting_change)
+        st.sidebar.number_input("C2 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle2", on_change=on_group2_setting_change)
+        st.sidebar.number_input("C3 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle3", on_change=on_group2_setting_change)
+        st.sidebar.number_input("C4 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle4", on_change=on_group2_setting_change)
+        st.sidebar.number_input("C5 Rank", 0, max(0, current_max_per_val_for_cycle_selection), step=1, key="Cycle5", on_change=on_group2_setting_change)
 
     # --- Auto-Recalculation Settings ---
     st.sidebar.subheader("⏰ Auto-Recalculation")
@@ -866,6 +911,9 @@ def render_sidebar():
     if st.session_state.get('calculation_needed', True):
         status_message = "⚠️ Parameters changed - calculation needed"
         status_color = "orange"
+    elif st.session_state.get('rerun_wave_summation', False):
+        status_message = "🔄 Wave parameters changed - auto-updating"
+        status_color = "blue"
     else:
         status_message = "✅ Results up to date"
         status_color = "green"
@@ -1021,9 +1069,108 @@ def load_and_preview_data(uploaded_file_obj):
     
     return ohlc_data_internal, data_source_name_internal
 
+# --- New Helper Function for Downloads and DB Management ---
+def _render_downloads_and_db_management(current_ohlc_data, current_data_source_name, is_full_computation_run):
+    st.subheader("Download Results & Database Management")
+
+    run_id_for_display = st.session_state.get('cached_run_id_for_downloads', f"run_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}")
+    symbol_for_display = st.session_state.get('cached_symbol_for_db_for_downloads', current_data_source_name)
+    timeframe_for_display = st.session_state.get('cached_timeframe_for_db_for_downloads', '1d')
+    # For DB write: settings, cycle_results (list of dicts), wave_data (dict of lists)
+    settings_for_db = st.session_state.get('cached_download_settings_for_downloads', {})
+    cycle_results_for_db = st.session_state.get('cached_cycle_results_for_downloads', [])
+    wave_data_for_db = st.session_state.get('cached_wave_data_for_downloads', {})
+    
+    if not is_full_computation_run:
+        st.info(f"💾 Database write skipped for cached display. Last saved Run ID for these results: {run_id_for_display}")
+    else: # Full computation run, perform DB write using the cached ID and data from this run
+        try:
+            db_success = st.session_state.db_manager.store_analysis_results(
+                run_id=run_id_for_display, # This ID was generated and cached during this full run
+                symbol=symbol_for_display,
+                timeframe=timeframe_for_display,
+                parameters=settings_for_db,
+                cycle_results=cycle_results_for_db,
+                wave_data=wave_data_for_db
+            )
+            if db_success: st.success(f"✅ Analysis results saved to database (Run ID: {run_id_for_display})")
+            else: st.warning("⚠️ Failed to save to database (full run), but downloads are available")
+        except Exception as e: st.warning(f"⚠️ Database storage failed (full run): {e}")
+
+    with st.expander("📥 Download Analysis Results", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        download_key_suffix_render = run_id_for_display # Use the consistent run_id
+
+        with col1: # JSON
+            if st.session_state.get('cached_json_download_bytes'):
+                if st.download_button("📄 Download JSON", 
+                                   data=st.session_state.cached_json_download_bytes,
+                                   file_name=st.session_state.cached_json_filename,
+                                   mime="application/json", 
+                                   key=f"dl_json_btn_{download_key_suffix_render}", use_container_width=True):
+                    pass  # Download completed, no additional flags needed
+            else:
+                st.button("📄 Download JSON", disabled=True, use_container_width=True, help="JSON data not available for download.")
+        
+        with col2: # Cycles CSV
+            if st.session_state.get('cached_cycles_csv_download_bytes'):
+                if st.download_button("📊 Download Cycles CSV", 
+                                   data=st.session_state.cached_cycles_csv_download_bytes,
+                                   file_name=st.session_state.cached_cycles_csv_filename,
+                                   mime="text/csv", 
+                                   key=f"dl_csv_btn_{download_key_suffix_render}", use_container_width=True):
+                    pass  # Download completed, no additional flags needed
+            else:
+                st.button("📊 Download Cycles CSV", disabled=True, use_container_width=True, help="Cycles CSV data not available.")
+
+        with col3: # Combined CSV
+            if st.session_state.get('cached_combined_csv_download_bytes'):
+                if st.download_button("📈 Download Combined CSV", 
+                                   data=st.session_state.cached_combined_csv_download_bytes,
+                                   file_name=st.session_state.cached_combined_csv_filename,
+                                   mime="text/csv", 
+                                   key=f"dl_combined_btn_{download_key_suffix_render}", use_container_width=True,
+                                   help="Download price data with cycle wave values"):
+                    pass  # Download completed, no additional flags needed
+            else:
+                st.button("📈 Download Combined CSV", disabled=True, use_container_width=True, help="Combined CSV data not available.")
+
+    with st.expander("🗄️ Database Management", expanded=False):
+        col_db1, col_db2 = st.columns(2)
+        with col_db1:
+            st.write("**Database Statistics**")
+            if 'cached_db_stats_display' in st.session_state:
+                for stat_line in st.session_state.cached_db_stats_display:
+                    st.write(stat_line)
+            else:
+                st.write("Database stats will appear after first full analysis.")
+        with col_db2:
+            st.write("**Recent Analysis Runs**")
+            if 'cached_recent_runs_display' in st.session_state:
+                for run_line in st.session_state.cached_recent_runs_display:
+                    st.write(run_line)
+            else:
+                st.write("Recent runs will appear after first full analysis.")
+            st.write(f"• Displayed/Saved Run ID: {run_id_for_display}")
+
 # --- Analysis Results Display Function ---
-def display_analysis_results(current_ohlc_data, current_data_source_name):
+def display_analysis_results(current_ohlc_data, current_data_source_name, perform_full_computation=True):
     """Display analysis results with downloads, database management, and scheduling"""
+    
+    if not perform_full_computation and 'cached_fig_for_display' in st.session_state and 'cached_table_for_display' in st.session_state:
+        print(f"🔍 DEBUG: Displaying results from cache for {current_data_source_name}")
+        st.subheader("Cycle Analysis Results (Cached)")
+        st.dataframe(st.session_state.cached_table_for_display)
+        st.subheader(f"Indicator Plot (Cached - Plot Time: {st.session_state.get('cached_plot_timestamp', 'N/A')})")
+        st.pyplot(st.session_state.cached_fig_for_display)
+        
+        # Call the helper for downloads and DB status (passing False for full computation)
+        _render_downloads_and_db_management(current_ohlc_data, current_data_source_name, is_full_computation_run=False)
+        return # Exit early
+    
+    print(f"🔍 DEBUG: Performing full computation and display for {current_data_source_name}")
+    # ... (the rest of the function, i.e., the full computation path) ...
+    
     print(f"🔍 DEBUG: display_analysis_results() called for {current_data_source_name}")
     print(f"🔍 DEBUG: Data length: {len(current_ohlc_data) if current_ohlc_data is not None else 'None'}")
     
@@ -1065,6 +1212,9 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                  ohlc_data_hash_for_cache_key = pd.util.hash_pandas_object(current_ohlc_data).sum()
             
             core_components = cached_core_calculation_wrapper(ohlc_data_hash_for_cache_key, core_calc_args_tuple)
+
+            # Store core components in session state for Group 2 automatic updates
+            st.session_state.cached_core_components_output = core_components
 
             if core_components["status"] == "error":
                 st.error(f"Core Calculation Error: {core_components['message']}")
@@ -1147,8 +1297,12 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                     if fig: st.pyplot(fig)
                     else: st.warning("Plot generation failed or no figure returned.")
 
+                    # Cache the figure and table for display
+                    st.session_state.cached_fig_for_display = fig
+                    st.session_state.cached_table_for_display = cycle_table_df
+                    st.session_state.cached_plot_timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')
+
                     # --- Enhanced Download & Database Features (Milestone 3) ---
-                    st.subheader("Download Results & Database Management")
                     
                     # Store analysis results in database
                     run_id = f"analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1196,484 +1350,130 @@ def display_analysis_results(current_ohlc_data, current_data_source_name):
                         symbol_for_db = current_data_source_name
                     timeframe_for_db = st.session_state.selected_timeframe if st.session_state.data_source == 'live' else '1d'
                     
-                    try:
-                        db_success = st.session_state.db_manager.store_analysis_results(
-                            run_id=run_id,
-                            symbol=symbol_for_db,
-                            timeframe=timeframe_for_db,
-                            parameters=download_settings,
-                            cycle_results=cycle_results,
-                            wave_data=wave_data
-                        )
-                        if db_success:
-                            st.success(f"✅ Analysis results saved to database (Run ID: {run_id})")
-                        else:
-                            st.warning("⚠️ Failed to save to database, but downloads are still available")
-                    except Exception as e:
-                        st.warning(f"⚠️ Database storage failed: {e}")
-                    
-                    # Download Options (JSON and CSV)
-                    with st.expander("📥 Download Analysis Results", expanded=False):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        print(f"🔍 DEBUG: Preparing analysis download buttons")
-                        
-                        # Prepare download data once per analysis run and store in session state
-                        download_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                        download_key = f"download_data_{run_id}"
-                        
-                        print(f"🔍 DEBUG: download_key = {download_key}")
-                        print(f"🔍 DEBUG: download_key in session_state = {download_key in st.session_state}")
-                        
-                        if download_key not in st.session_state:
-                            print(f"🔍 DEBUG: Generating new analysis download data for {download_key}")
-                            # Prepare JSON download data
-                            json_dl_data = {
+                    # Cache all necessary data for downloads and DB management section
+                    st.session_state.cached_run_id_for_downloads = run_id 
+                    st.session_state.cached_symbol_for_db_for_downloads = symbol_for_db
+                    st.session_state.cached_timeframe_for_db_for_downloads = timeframe_for_db
+                    st.session_state.cached_cycle_results_for_downloads = cycle_results # This is the list of dicts for JSON/DB
+                    st.session_state.cached_wave_data_for_downloads = wave_data
+                    st.session_state.cached_download_settings_for_downloads = download_settings.copy()
+                    current_download_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    st.session_state.cached_download_timestamp = current_download_timestamp
+
+                    # --- Pre-calculate and cache download bytes ---
+                    # 1. JSON Download Bytes
+                    json_dl_data_for_bytes = {
                                 "analysis_metadata": {
-                                    "symbol": symbol_for_db,
-                                    "timeframe": timeframe_for_db,
-                                    "timestamp": datetime.datetime.now().isoformat(),
-                                    "run_id": run_id,
-                                    "data_length": len(current_ohlc_data)
-                                },
-                                "cycle_results": cycle_results,
-                                "past_wave": past_wave_data_list,
-                                "future_wave": future_wave_data_list,
-                                "price_data": current_ohlc_data.to_dict('records')
-                            }
-                            
-                            # Prepare serializable settings
-                            serializable_settings = {}
-                            for k, v in download_settings.items():
-                                if isinstance(v, np.integer):
-                                    serializable_settings[k] = int(v)
-                                elif isinstance(v, np.floating):
-                                    serializable_settings[k] = float(v)
-                                elif isinstance(v, np.bool_):
-                                    serializable_settings[k] = bool(v)
-                                elif isinstance(v, np.ndarray):
-                                    serializable_settings[k] = v.tolist()
-                                else:
-                                    serializable_settings[k] = v
-                            json_dl_data['settings_used'] = serializable_settings
-                            
-                            # Prepare combined price + cycle data CSV
-                            combined_df = current_ohlc_data.reset_index().copy()
-                            
-                            # Initialize Cycle column with NaN
-                            combined_df['Cycle'] = np.nan
-                            
-                            # Get cycle periods from analysis results
-                            cycle_periods = []
-                            if not cycle_table_df.empty:
-                                cycle_periods = cycle_table_df['Period'].tolist()
-                            
-                            # Add past wave direction changes with cycle periods
-                            if len(past_wave_data_list) > 1:
-                                # Find direction changes in past wave (similar to plotting logic)
-                                direction_changes = []
-                                for i in range(len(past_wave_data_list) - 1):
-                                    current_direction = 'up' if past_wave_data_list[i] > past_wave_data_list[i + 1] else 'down'
-                                    if i == 0:
-                                        prev_direction = current_direction
-                                    else:
-                                        prev_direction = 'up' if past_wave_data_list[i-1] > past_wave_data_list[i] else 'down'
-                                    
-                                    # Mark direction change
-                                    if prev_direction != current_direction:
-                                        direction_changes.append(i)
-                                
-                                # Map direction changes to price data bars and assign dominant cycle
-                                past_wave_length = len(past_wave_data_list)
-                                if len(combined_df) >= past_wave_length:
-                                    data_start_idx = len(combined_df) - past_wave_length
-                                    
-                                    for change_idx in direction_changes:
-                                        price_bar_idx = data_start_idx + change_idx
-                                        if 0 <= price_bar_idx < len(combined_df):
-                                            # Assign the dominant cycle period (first/strongest)
-                                            if cycle_periods:
-                                                combined_df.loc[price_bar_idx, 'Cycle'] = cycle_periods[0]
-                            
-                            # Add future projections if available
-                            if len(future_wave_data_list) > 0:
-                                # Create future rows with estimated dates
-                                last_date = combined_df['Date'].iloc[-1] if not combined_df.empty else datetime.datetime.now()
-                                if isinstance(last_date, str):
-                                    last_date = pd.to_datetime(last_date)
-                                
-                                # Determine time increment based on timeframe
-                                timeframe = timeframe_for_db
-                                if timeframe == '5m':
-                                    time_delta = datetime.timedelta(minutes=5)
-                                elif timeframe == '1h':
-                                    time_delta = datetime.timedelta(hours=1)
-                                elif timeframe == '4h':
-                                    time_delta = datetime.timedelta(hours=4)
-                                elif timeframe == '1d':
-                                    time_delta = datetime.timedelta(days=1)
-                                else:
-                                    time_delta = datetime.timedelta(days=1)  # Default
-                                
-                                # Find direction changes in future wave
-                                future_direction_changes = []
-                                if len(future_wave_data_list) > 1:
-                                    for i in range(len(future_wave_data_list) - 1):
-                                        current_direction = 'up' if future_wave_data_list[i] > future_wave_data_list[i + 1] else 'down'
-                                        if i == 0:
-                                            prev_direction = current_direction
-                                        else:
-                                            prev_direction = 'up' if future_wave_data_list[i-1] > future_wave_data_list[i] else 'down'
-                                        
-                                        # Mark direction change
-                                        if prev_direction != current_direction:
-                                            future_direction_changes.append(i)
-                                
-                                # Create future projection rows
-                                future_rows = []
-                                for i, cycle_value in enumerate(future_wave_data_list):
-                                    future_date = last_date + (time_delta * (i + 1))
-                                    
-                                    # Check if this bar has a direction change
-                                    cycle_period = np.nan
-                                    if i in future_direction_changes and cycle_periods:
-                                        cycle_period = cycle_periods[0]  # Use dominant cycle
-                                    
-                                    future_rows.append({
-                                        'Date': future_date,
-                                        'Open': None,
-                                        'High': None, 
-                                        'Low': None,
-                                        'Close': None,
-                                        'Volume': None,
-                                        'Cycle': cycle_period
-                                    })
-                                
-                                # Add future rows to dataframe
-                                future_df = pd.DataFrame(future_rows)
-                                combined_df = pd.concat([combined_df, future_df], ignore_index=True)
-                            
-                            # Store prepared data in session state
-                            st.session_state[download_key] = {
-                                'json_data': json_dl_data,
-                                'csv_data': cycle_table_df.copy() if not cycle_table_df.empty else pd.DataFrame(),
-                                'combined_data': combined_df,
-                                'timestamp': download_timestamp,
-                                'symbol': symbol_for_db
-                            }
-                            print(f"🔍 DEBUG: Stored new analysis download data for {download_key}")
-                        else:
-                            print(f"🔍 DEBUG: Using cached analysis download data for {download_key}")
-                        
-                        def analysis_download_fragment():
-                            print(f"🔍 DEBUG: Creating analysis download button widgets")
-                            download_data = st.session_state[download_key]
-                            
-                            # Store analysis state before download buttons (in case they cause rerun)
-                            if st.session_state.get('run_calculation', False):
-                                st.session_state['analysis_was_running'] = True
-                            
-                            with col1:
-                                # JSON download
-                                try:
-                                    print(f"🔍 DEBUG: Creating JSON download button")
-                                    json_bytes = st.session_state.data_exporter.export_to_streamlit_download(
-                                        download_data['json_data'], 
-                                        f"{download_data['symbol']}_analysis_{download_data['timestamp']}.json", 
-                                        'json'
-                                    )
-                                    json_downloaded = st.download_button(
-                                        "📄 Download JSON",
-                                        json_bytes,
-                                        f"{download_data['symbol']}_analysis_{download_data['timestamp']}.json",
-                                        "application/json",
-                                        key="dl_json_btn",
-                                        use_container_width=True
-                                    )
-                                    if json_downloaded:
-                                        print(f"🔍 DEBUG: JSON download triggered - preserving analysis state")
-                                        st.session_state['preserve_analysis_results'] = True
-                                    print(f"🔍 DEBUG: JSON download button created")
-                                except Exception as e:
-                                    st.error(f"JSON preparation error: {e}")
-                            
-                            with col2:
-                                # CSV download for cycle results
-                                if not download_data['csv_data'].empty:
-                                    try:
-                                        print(f"🔍 DEBUG: Creating CSV download button")
-                                        csv_bytes = st.session_state.data_exporter.export_to_streamlit_download(
-                                            download_data['csv_data'], 
-                                            f"{download_data['symbol']}_cycles_{download_data['timestamp']}.csv", 
-                                            'csv'
-                                        )
-                                        csv_downloaded = st.download_button(
-                                            "📊 Download Cycles CSV",
-                                            csv_bytes,
-                                            f"{download_data['symbol']}_cycles_{download_data['timestamp']}.csv",
-                                            "text/csv",
-                                            key="dl_csv_btn",
-                                            use_container_width=True
-                                        )
-                                        if csv_downloaded:
-                                            print(f"🔍 DEBUG: CSV download triggered - preserving analysis state")
-                                            st.session_state['preserve_analysis_results'] = True
-                                        print(f"🔍 DEBUG: CSV download button created")
-                                    except Exception as e:
-                                        st.error(f"CSV preparation error: {e}")
-                            
-                            with col3:
-                                # Combined price + cycle data download
-                                try:
-                                    print(f"🔍 DEBUG: Creating combined CSV download button")
-                                    combined_csv_bytes = st.session_state.data_exporter.export_to_streamlit_download(
-                                        download_data['combined_data'], 
-                                        f"{download_data['symbol']}_combined_{download_data['timestamp']}.csv", 
-                                        'csv'
-                                    )
-                                    combined_downloaded = st.download_button(
-                                        "📈 Download Combined CSV",
-                                        combined_csv_bytes,
-                                        f"{download_data['symbol']}_combined_{download_data['timestamp']}.csv",
-                                        "text/csv",
-                                        key="dl_combined_btn",
-                                        use_container_width=True,
-                                        help="Download price data with cycle wave values"
-                                    )
-                                    if combined_downloaded:
-                                        print(f"🔍 DEBUG: Combined CSV download triggered - preserving analysis state")
-                                        st.session_state['preserve_analysis_results'] = True
-                                    print(f"🔍 DEBUG: Combined CSV download button created")
-                                except Exception as e:
-                                    st.error(f"Combined CSV preparation error: {e}")
-                            print(f"🔍 DEBUG: Analysis download button widgets creation completed")
-                        
-                        analysis_download_fragment()
+                            "symbol": symbol_for_db, "timeframe": timeframe_for_db,
+                            "timestamp": datetime.datetime.now().isoformat(), "run_id": run_id,
+                            "data_length": len(current_ohlc_data) if current_ohlc_data is not None else 0
+                        },
+                        "cycle_results": cycle_results, # list of dicts
+                        "past_wave": wave_data.get('past', []),
+                        "future_wave": wave_data.get('future', []),
+                        "price_data": current_ohlc_data.to_dict('records') if current_ohlc_data is not None else [],
+                        "settings_used": {} # Will be populated next
+                    }
+                    serializable_settings_for_bytes = {}
+                    for k, v_bytes in download_settings.items(): # Use a different loop variable here
+                        if isinstance(v_bytes, np.integer): serializable_settings_for_bytes[k] = int(v_bytes)
+                        elif isinstance(v_bytes, np.floating): serializable_settings_for_bytes[k] = float(v_bytes)
+                        elif isinstance(v_bytes, np.bool_): serializable_settings_for_bytes[k] = bool(v_bytes)
+                        elif isinstance(v_bytes, np.ndarray): serializable_settings_for_bytes[k] = v_bytes.tolist()
+                        else: serializable_settings_for_bytes[k] = v_bytes
+                    json_dl_data_for_bytes['settings_used'] = serializable_settings_for_bytes
                     
-                    # Database management section
-                    with st.expander("🗄️ Database Management", expanded=False):
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("**Database Statistics**")
-                            try:
-                                stats = st.session_state.db_manager.get_database_stats()
-                                for key, value in stats.items():
-                                    st.write(f"• {key}: {value}")
-                            except Exception as e:
-                                st.error(f"Error getting database stats: {e}")
-                        
-                        with col2:
-                            st.write("**Recent Analysis Runs**")
-                            try:
-                                # Get recent runs from database
-                                recent_runs = st.session_state.db_manager.get_recent_runs(symbol=symbol_for_db, limit=5)
-                                if recent_runs:
-                                    for run in recent_runs:
-                                        run_time = run.get('timestamp', 'Unknown')
-                                        if isinstance(run_time, str):
-                                            try:
-                                                # Parse timestamp and format nicely
-                                                dt = datetime.datetime.fromisoformat(run_time.replace('Z', '+00:00'))
-                                                formatted_time = dt.strftime('%m/%d %H:%M')
-                                            except:
-                                                formatted_time = run_time[:16]  # Fallback
-                                        else:
-                                            formatted_time = str(run_time)[:16]
-                                        
-                                        st.write(f"• {formatted_time} - {run.get('symbol', 'Unknown')} ({run.get('timeframe', 'Unknown')})")
-                                else:
-                                    st.write("• No recent runs found")
-                                st.write(f"• Current run: {run_id}")
-                                st.write("• Database: financial_cycle_analyzer.db")
-                            except Exception as e:
-                                st.error(f"Error getting recent runs: {e}")
-                                st.write(f"• Current run: {run_id}")
-                                st.write("• Database: financial_cycle_analyzer.db")
-                    
-                    # Initialize schedule tracking in session state for auto-recalculation
-                    if 'schedule_info' not in st.session_state:
-                        st.session_state.schedule_info = {}
-                    
-                    # Only handle scheduling logic if auto-recalculation is enabled
-                    if st.session_state.get('schedule_enabled', False):
-                        schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
-                        is_scheduled = schedule_id in st.session_state.schedule_info
-                        recalc_bars = st.session_state.get('recalc_bars', 1)
-                        
-                        # Auto-start scheduling when enabled
-                        if not is_scheduled:
-                            # Calculate next candle open time using centralized function
-                            next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                            
-                            # Store schedule info in session state for countdown
-                            st.session_state.schedule_info[schedule_id] = {
-                                'symbol': symbol_for_db,
-                                'timeframe': timeframe_for_db,
-                                'last_run': datetime.datetime.now(pytz.utc),
-                                'next_run': next_candle_time,
-                                'settings': download_settings.copy(),
-                                'recalc_bars': recalc_bars
-                            }
-                        
-                        # Show scheduling status in an info box
-                        with st.expander("⏰ Auto-Recalculation Status", expanded=False):
-                            if is_scheduled:
-                                schedule_info = st.session_state.schedule_info[schedule_id]
-                                
-                                # Create countdown fragment that auto-updates
-                                @st.fragment(run_every="1s")
-                                def countdown_display():
-                                    next_run = schedule_info['next_run']
-                                    now = datetime.datetime.now(pytz.utc)
-                                    
-                                    if now >= next_run:
-                                        # Time to run analysis
-                                        st.warning("🔄 Running scheduled analysis...")
-                                        
-                                        try:
-                                            # Fetch only new data (fetch a small number of recent bars to be safe)
-                                            fetcher = CryptoDataFetcher(exchange_name=st.session_state.selected_exchange)
-                                            bars_to_fetch = max(5, recalc_bars + 2)  # Fetch at least 5 bars to be safe
-                                            new_data = fetcher.fetch_ohlcv(
-                                                symbol=symbol_for_db,
-                                                timeframe=timeframe_for_db,
-                                                limit=bars_to_fetch
-                                            )
-                                            
-                                            if not new_data.empty:
-                                                # Merge new data with existing data
-                                                if 'live_data' in st.session_state and not st.session_state.live_data.empty:
-                                                    existing_data = st.session_state.live_data.copy()
-                                                    
-                                                    # Concatenate existing and new data
-                                                    combined_data = pd.concat([existing_data, new_data], ignore_index=True)
-                                                    
-                                                    # Remove duplicates based on Date column, keeping the latest version
-                                                    combined_data = combined_data.drop_duplicates(subset=['Date'], keep='last')
-                                                    
-                                                    # Sort by Date
-                                                    combined_data = combined_data.sort_values('Date').reset_index(drop=True)
-                                                    
-                                                    # Store merged data in database
-                                                    db_success = st.session_state.db_manager.store_price_data(
-                                                        combined_data, 
-                                                        symbol_for_db, 
-                                                        timeframe_for_db
-                                                    )
-                                                    
-                                                    # Update session state with merged data
-                                                    st.session_state.live_data = combined_data
-                                                    st.session_state.ohlc_data_length_for_sliders = len(combined_data)
-                                                else:
-                                                    # No existing full dataset - fetch complete historical data instead of using small incremental fetch
-                                                    st.info("Auto-recalc: Fetching initial historical dataset...")
-                                                    try:
-                                                        # Get the Historical Days value from the slider
-                                                        days_back_value = st.session_state.get("days_back_slider", 90)
-                                                        
-                                                        # Fetch full historical data
-                                                        full_historical_data = fetcher.get_historical_data(
-                                                            symbol=symbol_for_db,
-                                                            timeframe=timeframe_for_db,
-                                                            days_back=days_back_value
-                                                        )
-                                                        
-                                                        if not full_historical_data.empty:
-                                                            # Store in database
-                                                            db_success = st.session_state.db_manager.store_price_data(
-                                                                full_historical_data, 
-                                                                symbol_for_db, 
-                                                                timeframe_for_db
-                                                            )
-                                                            
-                                                            # Store the full historical dataset
-                                                            st.session_state.live_data = full_historical_data
-                                                            st.session_state.ohlc_data_length_for_sliders = len(full_historical_data)
-                                                            
-                                                            if db_success:
-                                                                st.success(f"Auto-recalc: Fetched initial historical dataset ({len(full_historical_data)} bars)")
-                                                            else:
-                                                                st.warning(f"Auto-recalc: Fetched initial historical dataset ({len(full_historical_data)} bars) but failed to store in database")
-                                                        else:
-                                                            # Full fetch failed, fall back to small incremental data as last resort
-                                                            st.warning("Auto-recalc: Full historical fetch returned no data. Using incremental data as fallback.")
-                                                            st.session_state.live_data = new_data
-                                                            st.session_state.ohlc_data_length_for_sliders = len(new_data)
-                                                    
-                                                    except Exception as full_fetch_error:
-                                                        # Full historical fetch failed, use small incremental data as last resort
-                                                        st.error(f"Auto-recalc: Failed to fetch full historical data ({full_fetch_error}). Analysis may be impacted.")
-                                                        st.session_state.live_data = new_data
-                                                        st.session_state.ohlc_data_length_for_sliders = len(new_data)
-                                                
-                                                # Calculate next candle open time for next execution
-                                                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                                                
-                                                # Update schedule for next run
-                                                schedule_info['last_run'] = now
-                                                schedule_info['next_run'] = next_candle_time
-                                                
-                                                # Set flag to trigger cycle engine and auto-save settings
-                                                st.session_state.run_calculation = True
-                                                st.session_state.calculation_needed = False
-                                                auto_save_settings_to_file()
-                                                
-                                                st.success("✅ Scheduled analysis completed! New data fetched.")
-                                                st.rerun()  # Trigger full app rerun to update analysis
-                                            else:
-                                                st.warning("⚠️ No new data available")
-                                                # Still update next run time to next candle
-                                                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                                                schedule_info['next_run'] = next_candle_time
-                                        
-                                        except Exception as e:
-                                            st.error(f"Scheduled analysis failed: {e}")
-                                            # Update next run time to next candle even if failed
-                                            next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                                            schedule_info['next_run'] = next_candle_time
-                                    
-                                    else:
-                                        # Show live countdown
-                                        time_remaining = next_run - now
-                                        total_seconds = int(time_remaining.total_seconds())
-                                        
-                                        if total_seconds > 0:
-                                            hours = total_seconds // 3600
-                                            minutes = (total_seconds % 3600) // 60
-                                            seconds = total_seconds % 60
-                                            
-                                            if hours > 0:
-                                                countdown_text = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                                            else:
-                                                countdown_text = f"{minutes:02d}:{seconds:02d}"
-                                            
-                                            st.info(f"⏰ **Next analysis in:** {countdown_text}")
-                                            st.write(f"**Next Update:** When {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
-                                        else:
-                                            st.info("⏰ **Next analysis:** Any moment now...")
-                                
-                                # Call the auto-updating countdown fragment
-                                countdown_display()
-                            else:
-                                st.info("✅ Auto-recalculation enabled - waiting for scheduling to initialize...")
-                    
+                    st.session_state.cached_json_filename = f"{symbol_for_db}_analysis_{current_download_timestamp}.json"
+                    st.session_state.cached_json_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                        json_dl_data_for_bytes, st.session_state.cached_json_filename, 'json'
+                    )
+
+                    # 2. Cycles CSV Download Bytes (uses the DataFrame `cycle_table_df`)
+                    if not cycle_table_df.empty:
+                        st.session_state.cached_cycles_csv_filename = f"{symbol_for_db}_cycles_{current_download_timestamp}.csv"
+                        st.session_state.cached_cycles_csv_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                            cycle_table_df, st.session_state.cached_cycles_csv_filename, 'csv'
+                        )
                     else:
-                        # Auto-recalculation disabled - clean up any existing schedules
-                        if st.session_state.schedule_info:
-                            schedule_id = f"auto_{symbol_for_db}_{timeframe_for_db}"
-                            if schedule_id in st.session_state.schedule_info:
-                                del st.session_state.schedule_info[schedule_id]
+                        st.session_state.cached_cycles_csv_filename = None
+                        st.session_state.cached_cycles_csv_download_bytes = None
+
+                    # 3. Combined CSV Download Bytes
+                    combined_df_for_bytes = pd.DataFrame()
+                    if current_ohlc_data is not None:
+                        combined_df_for_bytes = current_ohlc_data.reset_index().copy()
+                        combined_df_for_bytes['Cycle'] = np.nan
+                        # Simplified logic for marking cycles in combined CSV (can be expanded if needed)
+                        cycle_periods_for_combined = [c.get('period') for c in cycle_results if c.get('period')] # from list of dicts
+                        # Ensure `past_wave_data_list` and `future_wave_data_list` are correctly referenced or derived from `wave_data`
+                        _past_wave_list = wave_data.get('past', [])
+                        _future_wave_list = wave_data.get('future', [])
+
+                        if _past_wave_list and len(_past_wave_list) > 1:
+                            _past_wave_length = len(_past_wave_list)
+                            if len(combined_df_for_bytes) >= _past_wave_length:
+                                _data_start_idx = len(combined_df_for_bytes) - _past_wave_length
+                                for i_wave in range(_past_wave_length - 1):
+                                    _direction_change = (_past_wave_list[i_wave] > _past_wave_list[i_wave+1]) != \
+                                                       (_past_wave_list[i_wave-1] > _past_wave_list[i_wave] if i_wave > 0 else False)
+                                    if _direction_change and cycle_periods_for_combined:
+                                        combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_periods_for_combined[0]
+
+                        if _future_wave_list:
+                            _last_date = combined_df_for_bytes['Date'].iloc[-1] if not combined_df_for_bytes.empty else pd.Timestamp.now(tz='UTC')
+                            _time_delta = pd.Timedelta(days=1) # Default
+                            if timeframe_for_db == '1h': _time_delta = pd.Timedelta(hours=1)
+                            elif timeframe_for_db == '5m': _time_delta = pd.Timedelta(minutes=5)
+                            # Add more timeframes as needed
+                            
+                            _future_rows = []
+                            for i_wave, val_wave in enumerate(_future_wave_list):
+                                _future_date = _last_date + (_time_delta * (i_wave + 1))
+                                _cycle_period_mark = np.nan
+                                if i_wave > 0 and cycle_periods_for_combined and \
+                                   (_future_wave_list[i_wave] > _future_wave_list[i_wave-1]) != \
+                                   (_future_wave_list[i_wave-1] > _future_wave_list[i_wave-2] if i_wave > 1 else False) :
+                                     _cycle_period_mark = cycle_periods_for_combined[0]
+                                _future_rows.append({'Date': _future_date, 'Cycle': _cycle_period_mark})
+                            if _future_rows:
+                                _future_df_for_bytes = pd.DataFrame(_future_rows)
+                                combined_df_for_bytes = pd.concat([combined_df_for_bytes, _future_df_for_bytes], ignore_index=True)
+
+                    if not combined_df_for_bytes.empty:
+                        st.session_state.cached_combined_csv_filename = f"{symbol_for_db}_combined_{current_download_timestamp}.csv"
+                        st.session_state.cached_combined_csv_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                            combined_df_for_bytes, st.session_state.cached_combined_csv_filename, 'csv'
+                        )
+                    else:
+                        st.session_state.cached_combined_csv_filename = None
+                        st.session_state.cached_combined_csv_download_bytes = None
+
+                    # --- Pre-cache DB Management Info ---
+                    try:
+                        db_stats_for_cache = st.session_state.db_manager.get_database_stats()
+                        st.session_state.cached_db_stats_display = [f"• {k}: {v}" for k, v in db_stats_for_cache.items()]
+                        
+                        recent_runs_for_cache = st.session_state.db_manager.get_recent_runs(symbol=symbol_for_db, limit=5)
+                        cached_recent_runs_display = []
+                        if recent_runs_for_cache:
+                            for run_item in recent_runs_for_cache:
+                                _run_time = run_item.get('timestamp', 'Unknown') # Assuming 'timestamp' key from db_manager.get_recent_runs
+                                if isinstance(_run_time, str):
+                                    try: _dt = datetime.datetime.fromisoformat(_run_time.replace('Z', '+00:00')); _formatted_time = _dt.strftime('%m/%d %H:%M')
+                                    except: _formatted_time = str(_run_time)[:16]
+                                else: _formatted_time = str(_run_time)[:16]
+                                cached_recent_runs_display.append(f"• {_formatted_time} - {run_item.get('symbol', 'Unknown')} ({run_item.get('timeframe', 'Unknown')})")
+                        else:
+                            cached_recent_runs_display.append("• No recent runs found")
+                        st.session_state.cached_recent_runs_display = cached_recent_runs_display
+                    except Exception as e_db_cache:
+                        st.session_state.cached_db_stats_display = [f"Error caching DB stats: {e_db_cache}"]
+                        st.session_state.cached_recent_runs_display = [f"Error caching recent runs: {e_db_cache}"]
+
+                    # Call the new helper function for downloads and DB management
+                    _render_downloads_and_db_management(current_ohlc_data, current_data_source_name, is_full_computation_run=True)
 
 # --- Main App Flow ---
-# Handle download-triggered reruns - restore analysis state
-if st.session_state.get('preserve_analysis_results', False):
-    print(f"🔍 DEBUG: Restoring analysis state after download-triggered rerun")
-    st.session_state.run_calculation = True  # Ensure analysis results are shown
-    st.session_state.calculation_needed = False  # Results are up to date
-    # Clear the preservation flag
-    del st.session_state['preserve_analysis_results']
-
 # Process uploaded settings file BEFORE rendering sidebar to avoid widget conflicts
 uploaded_settings_file = st.session_state.get('upload_settings_widget')
 if uploaded_settings_file is not None:
@@ -1724,6 +1524,286 @@ uploaded_file = render_sidebar()
 # Call the data loading and preview function
 ohlc_data, data_source_name = load_and_preview_data(uploaded_file)
 
+# Handle Group 2 changes automatically - re-run wave summation without full core calculation
+if (st.session_state.get('rerun_wave_summation', False) and 
+    st.session_state.cached_core_components_output is not None and 
+    ohlc_data is not None and not ohlc_data.empty):
+    
+    if st.session_state.cached_core_components_output["status"] == "success":
+        print("🔍 DEBUG: Rerunning wave summation due to Group 2 change.")
+        
+        # Get wave summation arguments from current session state
+        wave_sum_arg_keys = [
+            "UseCycleList", "Cycle1", "Cycle2", "Cycle3", "Cycle4", "Cycle5",
+            "StartAtCycle", "UseTopCycles", "SubtractNoise"
+        ]
+        wave_sum_args = {}
+        wave_settings_ok = True
+        for key in wave_sum_arg_keys:
+            if key in st.session_state:
+                wave_sum_args[key] = st.session_state[key]
+            else:
+                default_val = _get_default_settings().get(key)
+                if default_val is not None:
+                    wave_sum_args[key] = default_val
+                    st.session_state[key] = default_val
+                else:
+                    wave_settings_ok = False
+                    break
+        
+        if wave_settings_ok:
+            # Update core components with current WindowSizeFuture_base if it changed
+            updated_core_components = st.session_state.cached_core_components_output.copy()
+            
+            # Calculate the new WindowSizeFuture_output
+            max_per_from_core = len(updated_core_components.get('cyclebuffer', [])) - 1
+            if max_per_from_core <= 0:
+                max_per_from_core = st.session_state.get('MaxPer', 20)  # Fallback
+            new_WindowSizeFuture_output = max(st.session_state.WindowSizeFuture_base, 2 * max_per_from_core)
+            
+            # Check if we need to regenerate the goeWorkFuture matrix
+            current_future_size = updated_core_components.get('current_WindowSizeFuture', 0)
+            if new_WindowSizeFuture_output != current_future_size:
+                print(f"🔍 DEBUG: Regenerating goeWorkFuture matrix from {current_future_size} to {new_WindowSizeFuture_output}")
+                
+                # Regenerate goeWorkFuture matrix with new dimensions
+                number_of_cycles = updated_core_components['number_of_cycles']
+                amplitudebuffer = updated_core_components['amplitudebuffer']
+                phasebuffer = updated_core_components['phasebuffer']
+                cyclebuffer = updated_core_components['cyclebuffer']
+                
+                # Create new goeWorkFuture matrix
+                new_goeWorkFuture = np.zeros((new_WindowSizeFuture_output, max_per_from_core + 1))
+                
+                # Get settings for wave generation
+                useCosine = st.session_state.get('useCosine', False)
+                useAddition = st.session_state.get('useAddition', False)
+                
+                # Regenerate future wave components using the same logic as in goertzel_core
+                for i_cycle_num in range(1, number_of_cycles + 1):
+                    if (i_cycle_num < len(amplitudebuffer) and 
+                        i_cycle_num < len(phasebuffer) and 
+                        i_cycle_num < len(cyclebuffer)):
+                        
+                        amplitude = amplitudebuffer[i_cycle_num - 1]  # Convert from 1-indexed
+                        phase = phasebuffer[i_cycle_num - 1]
+                        cycle_period = cyclebuffer[i_cycle_num - 1]
+                        
+                        if cycle_period == 0:
+                            continue
+                        
+                        # Use inverted sign for future wave (as per original algorithm)
+                        sign_val = 1.0 if not useAddition else -1.0
+                        
+                        # Generate future wave components
+                        for k_time_future in range(new_WindowSizeFuture_output):
+                            # Store future wave time-reversed (as per original algorithm)
+                            array_idx_future = new_WindowSizeFuture_output - k_time_future - 1
+                            if (array_idx_future >= 0 and 
+                                array_idx_future < new_goeWorkFuture.shape[0] and 
+                                i_cycle_num < new_goeWorkFuture.shape[1]):
+                                
+                                angle = phase + sign_val * k_time_future * 2.0 * np.pi / cycle_period
+                                new_goeWorkFuture[array_idx_future, i_cycle_num] = amplitude * (
+                                    np.cos(angle) if useCosine else np.sin(angle))
+                
+                # Update the core components with new matrix and size
+                updated_core_components['goeWorkFuture'] = new_goeWorkFuture
+                updated_core_components['current_WindowSizeFuture'] = new_WindowSizeFuture_output
+            else:
+                print("🔍 DEBUG: goeWorkFuture matrix size unchanged, using cached matrix")
+            
+            # Re-run wave summation with updated core components
+            wave_results = sum_composite_waves(updated_core_components, **wave_sum_args)
+            full_results = {**updated_core_components, **wave_results}
+            
+            # Re-generate the cycle table
+            cycle_table_df = create_cycle_table(
+                full_results['number_of_cycles'], full_results['cyclebuffer'], full_results['amplitudebuffer'],
+                full_results['phasebuffer'], full_results['cycleBartelsBuffer'],
+                st.session_state.UseCycleStrength, st.session_state.FilterBartels
+            )
+            
+            # Re-generate the plot
+            calc_bar_idx = full_results.get('calculation_bar_idx', len(ohlc_data) - 1)
+            plot_ws_past = full_results.get('current_WindowSizePast', st.session_state.WindowSizePast_base)
+            plot_ws_future = full_results.get('current_WindowSizeFuture', st.session_state.WindowSizeFuture_base)
+            analysis_sample_size = full_results.get('calculated_SampleSize', st.session_state.WindowSizePast_base)
+            
+            plot_fig = plot_indicator_lines(
+                ohlc_data, 
+                full_results.get('goertzel_past_wave'), 
+                full_results.get('goertzel_future_wave'),
+                calc_bar_idx, 
+                plot_ws_past, 
+                plot_ws_future, 
+                title=f"{data_source_name} - Cycle Overlay (Analysis Window: {analysis_sample_size} bars)"
+            )
+            
+            # Update cached display items
+            st.session_state.cached_fig_for_display = plot_fig
+            st.session_state.cached_table_for_display = cycle_table_df
+            st.session_state.cached_plot_timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')
+            
+            # Regenerate download data for Group 2 changes
+            # Prepare cycle results for download
+            cycle_results = []
+            if not cycle_table_df.empty:
+                for _, row in cycle_table_df.iterrows():
+                    cycle_results.append({
+                        'rank': int(row.get('Rank', 0)),
+                        'period': float(row.get('Period', 0)),
+                        'amplitude': float(row.get('Amplitude', 0)),
+                        'phase': float(row.get('Phase', 0)),
+                        'bartels_score': float(row.get('Bartels', 0)) if 'Bartels' in row else 0.0,
+                        'strength': float(row.get('Strength', 0)) if 'Strength' in row else 0.0
+                    })
+            
+            # Prepare wave data
+            past_wave_data_list = []
+            if full_results.get('goertzel_past_wave') is not None and hasattr(full_results['goertzel_past_wave'], 'tolist'):
+                past_wave_data_list = np.round(np.array(full_results['goertzel_past_wave']), 4).tolist()
+            
+            future_wave_data_list = []
+            if full_results.get('goertzel_future_wave') is not None and hasattr(full_results['goertzel_future_wave'], 'tolist'):
+                future_wave_data_list = np.round(np.array(full_results['goertzel_future_wave']), 4).tolist()
+            
+            wave_data = {
+                'past': past_wave_data_list,
+                'future': future_wave_data_list
+            }
+            
+            # Prepare download settings
+            core_calc_arg_keys = [
+                "source_price_type", "MaxPer", "WindowSizePast_base", "WindowSizeFuture_base",
+                "detrendornot", "DT_ZLper1", "DT_ZLper2", "DT_HPper1", "DT_HPper2",
+                "DT_RegZLsmoothPer", "HPsmoothPer", "ZLMAsmoothPer", "BarToCalculate",
+                "FilterBartels", "BartNoCycles", "BartSmoothPer", "BartSigLimit", "SortBartels",
+                "squaredAmp", "UseCycleStrength", "useAddition", "useCosine"
+            ]
+            core_calc_args = {}
+            for key in core_calc_arg_keys:
+                if key in st.session_state:
+                    core_calc_args[key] = st.session_state[key]
+            
+            download_settings = {**core_calc_args, **wave_sum_args}
+            download_settings["SampleSize_used_for_analysis"] = analysis_sample_size
+            download_settings["WindowSizePast_for_wave_matrix_calc"] = plot_ws_past 
+            download_settings["WindowSizeFuture_for_wave_matrix_calc"] = plot_ws_future
+            
+            # Determine the effective symbol for database storage
+            if st.session_state.data_source == 'live':
+                symbol_for_db = st.session_state.selected_symbol
+                custom_input_processed = st.session_state.get("custom_symbol_input", "").strip().upper()
+                if custom_input_processed:
+                    symbol_for_db = custom_input_processed
+            else:
+                symbol_for_db = data_source_name
+            timeframe_for_db = st.session_state.selected_timeframe if st.session_state.data_source == 'live' else '1d'
+            
+            # Generate new run ID for Group 2 changes
+            run_id = f"analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            current_download_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # Cache all necessary data for downloads and DB management section
+            st.session_state.cached_run_id_for_downloads = run_id 
+            st.session_state.cached_symbol_for_db_for_downloads = symbol_for_db
+            st.session_state.cached_timeframe_for_db_for_downloads = timeframe_for_db
+            st.session_state.cached_cycle_results_for_downloads = cycle_results
+            st.session_state.cached_wave_data_for_downloads = wave_data
+            st.session_state.cached_download_settings_for_downloads = download_settings.copy()
+            st.session_state.cached_download_timestamp = current_download_timestamp
+
+            # Regenerate download bytes
+            # 1. JSON Download Bytes
+            json_dl_data_for_bytes = {
+                "analysis_metadata": {
+                    "symbol": symbol_for_db, "timeframe": timeframe_for_db,
+                    "timestamp": datetime.datetime.now().isoformat(), "run_id": run_id,
+                    "data_length": len(ohlc_data) if ohlc_data is not None else 0
+                },
+                "cycle_results": cycle_results,
+                "past_wave": wave_data.get('past', []),
+                "future_wave": wave_data.get('future', []),
+                "price_data": ohlc_data.to_dict('records') if ohlc_data is not None else [],
+                "settings_used": {}
+            }
+            serializable_settings_for_bytes = {}
+            for k, v_bytes in download_settings.items():
+                if isinstance(v_bytes, np.integer): serializable_settings_for_bytes[k] = int(v_bytes)
+                elif isinstance(v_bytes, np.floating): serializable_settings_for_bytes[k] = float(v_bytes)
+                elif isinstance(v_bytes, np.bool_): serializable_settings_for_bytes[k] = bool(v_bytes)
+                elif isinstance(v_bytes, np.ndarray): serializable_settings_for_bytes[k] = v_bytes.tolist()
+                else: serializable_settings_for_bytes[k] = v_bytes
+            json_dl_data_for_bytes['settings_used'] = serializable_settings_for_bytes
+            
+            st.session_state.cached_json_filename = f"{symbol_for_db}_analysis_{current_download_timestamp}.json"
+            st.session_state.cached_json_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                json_dl_data_for_bytes, st.session_state.cached_json_filename, 'json'
+            )
+
+            # 2. Cycles CSV Download Bytes
+            if not cycle_table_df.empty:
+                st.session_state.cached_cycles_csv_filename = f"{symbol_for_db}_cycles_{current_download_timestamp}.csv"
+                st.session_state.cached_cycles_csv_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                    cycle_table_df, st.session_state.cached_cycles_csv_filename, 'csv'
+                )
+            else:
+                st.session_state.cached_cycles_csv_filename = None
+                st.session_state.cached_cycles_csv_download_bytes = None
+
+            # 3. Combined CSV Download Bytes
+            combined_df_for_bytes = pd.DataFrame()
+            if ohlc_data is not None:
+                combined_df_for_bytes = ohlc_data.reset_index().copy()
+                combined_df_for_bytes['Cycle'] = np.nan
+                cycle_periods_for_combined = [c.get('period') for c in cycle_results if c.get('period')]
+                _past_wave_list = wave_data.get('past', [])
+                _future_wave_list = wave_data.get('future', [])
+
+                if _past_wave_list and len(_past_wave_list) > 1:
+                    _past_wave_length = len(_past_wave_list)
+                    if len(combined_df_for_bytes) >= _past_wave_length:
+                        _data_start_idx = len(combined_df_for_bytes) - _past_wave_length
+                        for i_wave in range(_past_wave_length - 1):
+                            _direction_change = (_past_wave_list[i_wave] > _past_wave_list[i_wave+1]) != \
+                                               (_past_wave_list[i_wave-1] > _past_wave_list[i_wave] if i_wave > 0 else False)
+                            if _direction_change and cycle_periods_for_combined:
+                                combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_periods_for_combined[0]
+
+                if _future_wave_list:
+                    _last_date = combined_df_for_bytes['Date'].iloc[-1] if not combined_df_for_bytes.empty else pd.Timestamp.now(tz='UTC')
+                    _time_delta = pd.Timedelta(days=1)
+                    if timeframe_for_db == '1h': _time_delta = pd.Timedelta(hours=1)
+                    elif timeframe_for_db == '5m': _time_delta = pd.Timedelta(minutes=5)
+                    
+                    _future_rows = []
+                    for i_wave, val_wave in enumerate(_future_wave_list):
+                        _future_date = _last_date + (_time_delta * (i_wave + 1))
+                        _cycle_period_mark = np.nan
+                        if i_wave > 0 and cycle_periods_for_combined and \
+                           (_future_wave_list[i_wave] > _future_wave_list[i_wave-1]) != \
+                           (_future_wave_list[i_wave-1] > _future_wave_list[i_wave-2] if i_wave > 1 else False):
+                             _cycle_period_mark = cycle_periods_for_combined[0]
+                        _future_rows.append({'Date': _future_date, 'Cycle': _cycle_period_mark})
+                    if _future_rows:
+                        _future_df_for_bytes = pd.DataFrame(_future_rows)
+                        combined_df_for_bytes = pd.concat([combined_df_for_bytes, _future_df_for_bytes], ignore_index=True)
+
+            if not combined_df_for_bytes.empty:
+                st.session_state.cached_combined_csv_filename = f"{symbol_for_db}_combined_{current_download_timestamp}.csv"
+                st.session_state.cached_combined_csv_download_bytes = st.session_state.data_exporter.export_to_streamlit_download(
+                    combined_df_for_bytes, st.session_state.cached_combined_csv_filename, 'csv'
+                )
+            else:
+                st.session_state.cached_combined_csv_filename = None
+                st.session_state.cached_combined_csv_download_bytes = None
+            
+            # Reset the flag
+            st.session_state.rerun_wave_summation = False
+            
+            print("🔍 DEBUG: Wave summation re-run completed.")
+
 # Check and run auto-recalculation (runs globally, independent of analysis results)
 check_and_run_auto_recalculation()
 
@@ -1737,23 +1817,35 @@ if ohlc_data is not None and not ohlc_data.empty:
     print(f"🔍 DEBUG: Data available, checking run_calculation flag")
     print(f"🔍 DEBUG: run_calculation = {st.session_state.get('run_calculation', False)}")
     
-    if not st.session_state.get('run_calculation', False):
-        # Data is available but user hasn't clicked "Run Cycle Engine" yet
-        print(f"🔍 DEBUG: Showing data loaded message (not running analysis)")
-        st.info("📊 **Data loaded successfully!** Click '🔄 Run Cycle Engine' in the sidebar to start analysis.")
-        
-        # Show basic data info
-        st.write(f"**Data Source:** {data_source_name}")
-        st.write(f"**Rows:** {len(ohlc_data):,}")
-        if hasattr(ohlc_data.index, 'min'):
-            st.write(f"**Date Range:** {ohlc_data.index.min()} to {ohlc_data.index.max()}")
-    else:
-        # User clicked "Run Cycle Engine" - proceed with analysis
+    if not st.session_state.get('run_calculation', False): # If "Run Cycle Engine" was NOT just clicked
+        if 'cached_fig_for_display' in st.session_state and \
+           'cached_table_for_display' in st.session_state and \
+           not st.session_state.get('calculation_needed', True) and \
+           not st.session_state.get('rerun_wave_summation', False): # Also ensure no pending wave summation
+            # Results are cached and no new calculation is needed, display from cache
+            display_analysis_results(ohlc_data, data_source_name, perform_full_computation=False)
+        else:
+            # Data loaded, but no analysis run yet, or settings changed making prior cache invalid for display without re-run
+            st.info("📊 **Data loaded successfully!** Click '🔄 Run Cycle Engine' in the sidebar to start analysis.")
+            # Show basic data info
+            st.write(f"**Data Source:** {data_source_name}")
+            st.write(f"**Rows:** {len(ohlc_data):,}")
+            if hasattr(ohlc_data.index, 'min'): # Check if ohlc_data.index exists and has min method
+                try:
+                    st.write(f"**Date Range:** {ohlc_data.index.min()} to {ohlc_data.index.max()}")
+                except AttributeError: # Handle cases where index might not be datetime-like after all
+                    st.write(f"**Date Range:** Index not suitable for min/max date display.")
+
+            if st.session_state.get('calculation_needed', True): 
+                # If settings changed or new data invalidates cache, clear old display cache items
+                # (Download byte caches are cleared in on_setting_change_with_calc_flag)
+                if 'cached_fig_for_display' in st.session_state: del st.session_state.cached_fig_for_display
+                if 'cached_table_for_display' in st.session_state: del st.session_state.cached_table_for_display
+                if 'cached_plot_timestamp' in st.session_state: del st.session_state.cached_plot_timestamp
+    else: # st.session_state.run_calculation IS True (user clicked "Run" or auto-recalc)
         print(f"🔍 DEBUG: Running analysis because run_calculation = True")
-        display_analysis_results(ohlc_data, data_source_name)
-        # Reset the run_calculation flag after displaying results
-        print(f"🔍 DEBUG: Resetting run_calculation flag to False")
-        st.session_state.run_calculation = False
+        display_analysis_results(ohlc_data, data_source_name, perform_full_computation=True) # Perform full computation
+        st.session_state.run_calculation = False # Reset the flag
 else:
     print(f"🔍 DEBUG: No data available for analysis")
     print(f"🔍 DEBUG: ohlc_data is None: {ohlc_data is None}")
