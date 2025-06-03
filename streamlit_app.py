@@ -308,8 +308,8 @@ def on_group2_setting_change():
 
 def check_and_run_auto_recalculation():
     """
-    Global function to check and execute auto-recalculation if needed.
-    This runs independently of analysis results display.
+    Global function to initialize auto-recalculation schedule if needed.
+    The actual triggering is now handled by the countdown fragment.
     """
     # Only run if auto-recalculation is enabled and we have live data
     if not st.session_state.get('schedule_enabled', False):
@@ -317,9 +317,6 @@ def check_and_run_auto_recalculation():
     
     if st.session_state.data_source != 'live':
         return
-    
-    # Debug: Show that the function is running
-    # st.write("🔍 DEBUG: Auto-recalc check running...")
     
     # Initialize schedule tracking
     if 'schedule_info' not in st.session_state:
@@ -351,72 +348,7 @@ def check_and_run_auto_recalculation():
         }
         st.success(f"✅ Auto-recalculation scheduled for {symbol_for_db} every {recalc_bars} {timeframe_for_db} bar(s)")
     
-    # Check if it's time to run
-    if is_scheduled:
-        schedule_info = st.session_state.schedule_info[schedule_id]
-        next_run = schedule_info['next_run']
-        now = datetime.datetime.now(pytz.utc)
-        
-        if now >= next_run:
-            # Time to run analysis
-            st.warning("🔄 Auto-recalculation triggered! Fetching new data...")
-            
-            try:
-                # Fetch new data
-                fetcher = CryptoDataFetcher(exchange_name=st.session_state.selected_exchange)
-                bars_to_fetch = max(5, recalc_bars + 2)
-                new_data = fetcher.fetch_ohlcv(
-                    symbol=symbol_for_db,
-                    timeframe=timeframe_for_db,
-                    limit=bars_to_fetch
-                )
-                
-                if not new_data.empty:
-                    # Merge with existing data if available
-                    if 'live_data' in st.session_state and not st.session_state.live_data.empty:
-                        existing_data = st.session_state.live_data.copy()
-                        combined_data = pd.concat([existing_data, new_data], ignore_index=True)
-                        combined_data = combined_data.drop_duplicates(subset=['Date'], keep='last')
-                        combined_data = combined_data.sort_values('Date').reset_index(drop=True)
-                    else:
-                        # No existing data, use new data
-                        combined_data = new_data
-                    
-                    # Store in database
-                    db_success = st.session_state.db_manager.store_price_data(
-                        combined_data, 
-                        symbol_for_db, 
-                        timeframe_for_db
-                    )
-                    
-                    # Update session state
-                    st.session_state.live_data = combined_data
-                    st.session_state.ohlc_data_length_for_sliders = len(combined_data)
-                    st.session_state.live_data_is_stale = False
-                    
-                    # Calculate next run time
-                    next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                    schedule_info['last_run'] = now
-                    schedule_info['next_run'] = next_candle_time
-                    
-                    # Trigger cycle engine
-                    st.session_state.run_calculation = True
-                    st.session_state.calculation_needed = False
-                    auto_save_settings_to_file()
-                    
-                    st.success("✅ Auto-recalculation completed! New data fetched and analysis triggered.")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ No new data available for auto-recalculation")
-                    # Still update next run time
-                    next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                    schedule_info['next_run'] = next_candle_time
-                    
-            except Exception as e:
-                st.error(f"Auto-recalculation failed: {e}")
-                # Update next run time even if failed
-                next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
-                schedule_info['next_run'] = next_candle_time
+    # The actual triggering logic is now handled by the countdown fragment
 
 def display_auto_recalc_status():
     """Display auto-recalculation status and countdown if active"""
@@ -463,7 +395,77 @@ def display_auto_recalc_status():
                 st.write(f"**Target:** When {recalc_bars} new {timeframe_for_db} candle{'s' if recalc_bars > 1 else ''} open{'s' if recalc_bars == 1 else ''}")
             else:
                 st.info("⏰ **Auto-analysis:** Triggering any moment now...")
-        
+                
+                # Time to run analysis! Trigger it here in the fragment
+                schedule_info = st.session_state.schedule_info[schedule_id]
+                current_time_trigger = datetime.datetime.now(pytz.utc)
+                
+                # Only trigger if we haven't already triggered recently (prevent multiple triggers)
+                last_trigger_time = schedule_info.get('last_trigger_time', None)
+                if last_trigger_time is None or (current_time_trigger - last_trigger_time).total_seconds() > 30:
+                    
+                    st.warning("🔄 Auto-recalculation triggered! Fetching new data...")
+                    
+                    try:
+                        # Fetch new data
+                        fetcher = CryptoDataFetcher(exchange_name=st.session_state.selected_exchange)
+                        bars_to_fetch = max(5, recalc_bars + 2)
+                        new_data = fetcher.fetch_ohlcv(
+                            symbol=symbol_for_db,
+                            timeframe=timeframe_for_db,
+                            limit=bars_to_fetch
+                        )
+                        
+                        if not new_data.empty:
+                            # Merge with existing data if available
+                            if 'live_data' in st.session_state and not st.session_state.live_data.empty:
+                                existing_data = st.session_state.live_data.copy()
+                                combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+                                combined_data = combined_data.drop_duplicates(subset=['Date'], keep='last')
+                                combined_data = combined_data.sort_values('Date').reset_index(drop=True)
+                            else:
+                                # No existing data, use new data
+                                combined_data = new_data
+                            
+                            # Store in database
+                            db_success = st.session_state.db_manager.store_price_data(
+                                combined_data, 
+                                symbol_for_db, 
+                                timeframe_for_db
+                            )
+                            
+                            # Update session state
+                            st.session_state.live_data = combined_data
+                            st.session_state.ohlc_data_length_for_sliders = len(combined_data)
+                            st.session_state.live_data_is_stale = False
+                            
+                            # Calculate next run time
+                            next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                            schedule_info['last_run'] = current_time_trigger
+                            schedule_info['next_run'] = next_candle_time
+                            schedule_info['last_trigger_time'] = current_time_trigger  # Track when we triggered
+                            
+                            # Trigger cycle engine
+                            st.session_state.run_calculation = True
+                            st.session_state.calculation_needed = False
+                            auto_save_settings_to_file()
+                            
+                            st.success("✅ Auto-recalculation completed! New data fetched and analysis triggered.")
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ No new data available for auto-recalculation")
+                            # Still update next run time
+                            next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                            schedule_info['next_run'] = next_candle_time
+                            schedule_info['last_trigger_time'] = current_time_trigger
+                            
+                    except Exception as e:
+                        st.error(f"Auto-recalculation failed: {e}")
+                        # Update next run time even if failed
+                        next_candle_time = get_next_candle_time(timeframe_for_db, recalc_bars)
+                        schedule_info['next_run'] = next_candle_time
+                        schedule_info['last_trigger_time'] = current_time_trigger
+
         countdown_fragment()
     else:
         st.info("✅ Auto-recalculation enabled - waiting for initialization...")
