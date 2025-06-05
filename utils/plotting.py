@@ -38,16 +38,21 @@ def plot_indicator_lines(ohlc_data: pd.DataFrame,
                          past_colors_dict: dict | None = None,
                          future_colors_dict: dict | None = None,
                          future_flip_colors_dict: dict | None = None,
-                         title: str = "Cycle Indicator Overlay") -> plt.Figure | None:
+                         title: str = "Cycle Indicator Overlay",
+                         bar_to_calculate: int | None = None) -> plt.Figure | None:
     """
     Plots OHLC data and overlays past/future cycle lines.
     Returns a matplotlib Figure object for use in Streamlit.
     Does NOT call mpf.show().
+    
+    Args:
+        bar_to_calculate: If provided, draws a thick blue vertical line showing the BarToCalculate offset position
     """
     # DEBUG: Trace wave data being passed to plotting
     print(f"DEBUG PLOT: plot_indicator_lines called with:")
     print(f"  calc_bar_index: {calc_bar_index}")
     print(f"  window_past: {window_past}, window_future: {window_future}")
+    print(f"  bar_to_calculate: {bar_to_calculate}")
     print(f"  past_wave length: {len(past_wave) if past_wave is not None else 'None'}")
     print(f"  future_wave length: {len(future_wave) if future_wave is not None else 'None'}")
     
@@ -109,6 +114,36 @@ def plot_indicator_lines(ohlc_data: pd.DataFrame,
     except (IndexError, ValueError) as e:
         print(f"Error mapping calc_bar_index to plotted data: {e}")
         pass 
+
+    # Add BarToCalculate annotation if provided
+    if bar_to_calculate is not None and numerical_calc_bar_index_in_plot != -1:
+        # Calculate the actual bar position where the Goertzel analysis starts
+        # The BarToCalculate offset is measured from the end of the analysis window (calc_bar_index)
+        # going backwards into the past window
+        bar_to_calculate_actual_index = calc_bar_index - window_past + bar_to_calculate - 1
+        
+        # Convert to plot coordinates
+        try:
+            bar_to_calculate_date = ohlc_data.index[bar_to_calculate_actual_index]
+            plotted_dates_list = plot_data.index.tolist()
+            if bar_to_calculate_date in plotted_dates_list:
+                bar_to_calculate_plot_idx = plotted_dates_list.index(bar_to_calculate_date)
+                
+                # Draw blue vertical line with same thickness as other lines
+                ax.axvline(x=bar_to_calculate_plot_idx, color='blue', linestyle='-', linewidth=1, 
+                          alpha=0.8, label=f'BarToCalculate Offset ({bar_to_calculate})')
+                
+                # Add text annotation
+                y_min, y_max = ax.get_ylim()
+                y_pos = y_max - (y_max - y_min) * 0.05  # 5% from top
+                ax.text(bar_to_calculate_plot_idx, y_pos, f'Offset: {bar_to_calculate}', 
+                       rotation=90, verticalalignment='top', horizontalalignment='right',
+                       color='blue', fontweight='bold', fontsize=9,
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
+                       
+                print(f"DEBUG PLOT: BarToCalculate annotation added at plot index {bar_to_calculate_plot_idx} (data index {bar_to_calculate_actual_index})")
+        except (IndexError, ValueError) as e:
+            print(f"Warning: Could not place BarToCalculate annotation: {e}")
 
     if numerical_calc_bar_index_in_plot != -1 and len(past_wave) >= 2:
         prev_past_color = None

@@ -1155,6 +1155,71 @@ def _render_downloads_and_db_management(current_ohlc_data, current_data_source_n
                 st.write("Recent runs will appear after first full analysis.")
             st.write(f"• Displayed/Saved Run ID: {run_id_for_display}")
 
+# --- Helper function to get active cycles ---
+def get_active_cycle_periods(cycle_results, wave_sum_args, number_of_cycles):
+    """
+    Determine which cycle periods are actually used in the composite wave
+    based on the wave summation settings.
+    
+    Returns a list of period values that are actually plotted.
+    """
+    if not cycle_results or number_of_cycles <= 0:
+        return []
+    
+    # Get cycle periods (cycle_results is list of dicts with 'period' key)
+    all_periods = [c.get('period') for c in cycle_results if c.get('period')]
+    if not all_periods:
+        return []
+    
+    active_periods = []
+    
+    if wave_sum_args.get('UseCycleList', False):
+        # Use specific cycles by their rank
+        cycle_ranks = [
+            wave_sum_args.get('Cycle1', 0),
+            wave_sum_args.get('Cycle2', 0), 
+            wave_sum_args.get('Cycle3', 0),
+            wave_sum_args.get('Cycle4', 0),
+            wave_sum_args.get('Cycle5', 0)
+        ]
+        
+        for rank in cycle_ranks:
+            if rank > 0 and rank <= number_of_cycles and rank <= len(all_periods):
+                active_periods.append(all_periods[rank - 1])  # Convert 1-indexed to 0-indexed
+                
+    else:
+        # Use top N cycles starting from StartAtCycle rank
+        start_rank = wave_sum_args.get('StartAtCycle', 1)  # 1-indexed
+        use_top = wave_sum_args.get('UseTopCycles', 1)
+        
+        # Calculate which cycles are added
+        end_rank = min(start_rank + use_top, number_of_cycles + 1)
+        for rank in range(start_rank, end_rank):
+            if rank > 0 and rank <= len(all_periods):
+                active_periods.append(all_periods[rank - 1])  # Convert 1-indexed to 0-indexed
+    
+    return active_periods
+
+# --- Helper function to format cycle string ---
+def format_cycle_string(active_periods):
+    """
+    Format the list of active cycle periods into a string for the CSV.
+    
+    Args:
+        active_periods: List of period values (e.g., [20, 8, 35])
+        
+    Returns:
+        String representation (e.g., "20" or "20+8+35")
+    """
+    if not active_periods:
+        return ""
+    elif len(active_periods) == 1:
+        return str(int(active_periods[0]))
+    else:
+        # Sort periods for consistent display (largest to smallest)
+        sorted_periods = sorted(active_periods, reverse=True)
+        return "+".join(str(int(p)) for p in sorted_periods)
+
 # --- Analysis Results Display Function ---
 def display_analysis_results(current_ohlc_data, current_data_source_name, perform_full_computation=True):
     """Display analysis results with downloads, database management, and scheduling"""
@@ -1203,17 +1268,20 @@ def display_analysis_results(current_ohlc_data, current_data_source_name, perfor
             
             
             @st.cache_data
-            def cached_core_calculation_wrapper(_ohlc_data_hashable_key, settings_tuple_wrapper):
-                kwargs = dict(settings_tuple_wrapper)
-                # ohlc_data is accessed from the outer scope here, ensure it's the correct one.
-                return calculate_core_cycle_components(current_ohlc_data.copy(), **kwargs)
+            def get_cached_core_components(data_for_caching, settings_tuple_for_caching):
+                # data_for_caching is now a direct argument and will be properly considered by the cache.
+                # The settings_tuple_for_caching ensures settings changes also bust the cache.
+                kwargs = dict(settings_tuple_for_caching)
+                return calculate_core_cycle_components(data_for_caching.copy(), **kwargs)
 
             core_calc_args_tuple = tuple(sorted(core_calc_args.items()))
-            ohlc_data_hash_for_cache_key = None
-            if current_ohlc_data is not None:
-                 ohlc_data_hash_for_cache_key = pd.util.hash_pandas_object(current_ohlc_data).sum()
             
-            core_components = cached_core_calculation_wrapper(ohlc_data_hash_for_cache_key, core_calc_args_tuple)
+            # Ensure current_ohlc_data is not None before calling
+            if current_ohlc_data is not None and not current_ohlc_data.empty:
+                core_components = get_cached_core_components(current_ohlc_data, core_calc_args_tuple)
+            else:
+                # Handle the case where current_ohlc_data is None or empty if necessary
+                core_components = {"status": "error", "message": "No OHLC data available for core calculation."}
 
             # Store core components in session state for Group 2 automatic updates
             st.session_state.cached_core_components_output = core_components
@@ -1294,7 +1362,8 @@ def display_analysis_results(current_ohlc_data, current_data_source_name, perfor
                         calc_bar_idx, 
                         plot_ws_past, 
                         plot_ws_future, 
-                        title=f"{current_data_source_name} - Cycle Overlay (Analysis Window: {analysis_sample_size} bars)"
+                        title=f"{current_data_source_name} - Cycle Overlay (Analysis Window: {analysis_sample_size} bars)",
+                        bar_to_calculate=st.session_state.get('BarToCalculate', 1)
                     )
                     if fig: st.pyplot(fig)
                     else: st.warning("Plot generation failed or no figure returned.")
@@ -1368,7 +1437,9 @@ def display_analysis_results(current_ohlc_data, current_data_source_name, perfor
                                 "analysis_metadata": {
                             "symbol": symbol_for_db, "timeframe": timeframe_for_db,
                             "timestamp": datetime.datetime.now().isoformat(), "run_id": run_id,
-                            "data_length": len(current_ohlc_data) if current_ohlc_data is not None else 0
+                            "data_length": len(current_ohlc_data) if current_ohlc_data is not None else 0,
+                            "bar_to_calculate_offset": st.session_state.get('BarToCalculate', 1),
+                            "calculation_bar_position": calc_bar_idx - plot_ws_past + st.session_state.get('BarToCalculate', 1) - 1
                         },
                         "cycle_results": cycle_results, # list of dicts
                         "past_wave": wave_data.get('past', []),
@@ -1405,8 +1476,17 @@ def display_analysis_results(current_ohlc_data, current_data_source_name, perfor
                     if current_ohlc_data is not None:
                         combined_df_for_bytes = current_ohlc_data.reset_index().copy()
                         combined_df_for_bytes['Cycle'] = np.nan
-                        # Simplified logic for marking cycles in combined CSV (can be expanded if needed)
-                        cycle_periods_for_combined = [c.get('period') for c in cycle_results if c.get('period')] # from list of dicts
+                        combined_df_for_bytes['BarToCalculate'] = np.nan
+                        
+                        # Mark the BarToCalculate offset position
+                        bar_to_calculate_position = calc_bar_idx - plot_ws_past + st.session_state.get('BarToCalculate', 1) - 1
+                        if 0 <= bar_to_calculate_position < len(combined_df_for_bytes):
+                            combined_df_for_bytes.loc[bar_to_calculate_position, 'BarToCalculate'] = 'OFFSET_BAR'
+                        
+                        # Get the cycles that are actually used in the composite wave
+                        active_periods = get_active_cycle_periods(cycle_results, wave_sum_args, full_results['number_of_cycles'])
+                        cycle_string_for_combined = format_cycle_string(active_periods)
+                        
                         # Ensure `past_wave_data_list` and `future_wave_data_list` are correctly referenced or derived from `wave_data`
                         _past_wave_list = wave_data.get('past', [])
                         _future_wave_list = wave_data.get('future', [])
@@ -1418,24 +1498,28 @@ def display_analysis_results(current_ohlc_data, current_data_source_name, perfor
                                 for i_wave in range(_past_wave_length - 1):
                                     _direction_change = (_past_wave_list[i_wave] > _past_wave_list[i_wave+1]) != \
                                                        (_past_wave_list[i_wave-1] > _past_wave_list[i_wave] if i_wave > 0 else False)
-                                    if _direction_change and cycle_periods_for_combined:
-                                        combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_periods_for_combined[0]
+                                    if _direction_change and cycle_string_for_combined:
+                                        combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_string_for_combined
 
                         if _future_wave_list:
                             _last_date = combined_df_for_bytes['Date'].iloc[-1] if not combined_df_for_bytes.empty else pd.Timestamp.now(tz='UTC')
                             _time_delta = pd.Timedelta(days=1) # Default
-                            if timeframe_for_db == '1h': _time_delta = pd.Timedelta(hours=1)
+                            if timeframe_for_db == '1m': _time_delta = pd.Timedelta(minutes=1)
                             elif timeframe_for_db == '5m': _time_delta = pd.Timedelta(minutes=5)
-                            # Add more timeframes as needed
+                            elif timeframe_for_db == '15m': _time_delta = pd.Timedelta(minutes=15)
+                            elif timeframe_for_db == '1h': _time_delta = pd.Timedelta(hours=1)
+                            elif timeframe_for_db == '4h': _time_delta = pd.Timedelta(hours=4)
+                            elif timeframe_for_db == '1d': _time_delta = pd.Timedelta(days=1)
+                            elif timeframe_for_db == '1w': _time_delta = pd.Timedelta(weeks=1)
                             
                             _future_rows = []
                             for i_wave, val_wave in enumerate(_future_wave_list):
                                 _future_date = _last_date + (_time_delta * (i_wave + 1))
                                 _cycle_period_mark = np.nan
-                                if i_wave > 0 and cycle_periods_for_combined and \
+                                if i_wave > 0 and cycle_string_for_combined and \
                                    (_future_wave_list[i_wave] > _future_wave_list[i_wave-1]) != \
                                    (_future_wave_list[i_wave-1] > _future_wave_list[i_wave-2] if i_wave > 1 else False) :
-                                     _cycle_period_mark = cycle_periods_for_combined[0]
+                                     _cycle_period_mark = cycle_string_for_combined
                                 _future_rows.append({'Date': _future_date, 'Cycle': _cycle_period_mark})
                             if _future_rows:
                                 _future_df_for_bytes = pd.DataFrame(_future_rows)
@@ -1639,7 +1723,8 @@ if (st.session_state.get('rerun_wave_summation', False) and
                 calc_bar_idx, 
                 plot_ws_past, 
                 plot_ws_future, 
-                title=f"{data_source_name} - Cycle Overlay (Analysis Window: {analysis_sample_size} bars)"
+                title=f"{data_source_name} - Cycle Overlay (Analysis Window: {analysis_sample_size} bars)",
+                bar_to_calculate=st.session_state.get('BarToCalculate', 1)
             )
             
             # Update cached display items
@@ -1722,7 +1807,9 @@ if (st.session_state.get('rerun_wave_summation', False) and
                 "analysis_metadata": {
                     "symbol": symbol_for_db, "timeframe": timeframe_for_db,
                     "timestamp": datetime.datetime.now().isoformat(), "run_id": run_id,
-                    "data_length": len(ohlc_data) if ohlc_data is not None else 0
+                    "data_length": len(ohlc_data) if ohlc_data is not None else 0,
+                    "bar_to_calculate_offset": st.session_state.get('BarToCalculate', 1),
+                    "calculation_bar_position": calc_bar_idx - plot_ws_past + st.session_state.get('BarToCalculate', 1) - 1
                 },
                 "cycle_results": cycle_results,
                 "past_wave": wave_data.get('past', []),
@@ -1759,7 +1846,17 @@ if (st.session_state.get('rerun_wave_summation', False) and
             if ohlc_data is not None:
                 combined_df_for_bytes = ohlc_data.reset_index().copy()
                 combined_df_for_bytes['Cycle'] = np.nan
-                cycle_periods_for_combined = [c.get('period') for c in cycle_results if c.get('period')]
+                combined_df_for_bytes['BarToCalculate'] = np.nan
+                
+                # Mark the BarToCalculate offset position
+                bar_to_calculate_position = calc_bar_idx - plot_ws_past + st.session_state.get('BarToCalculate', 1) - 1
+                if 0 <= bar_to_calculate_position < len(combined_df_for_bytes):
+                    combined_df_for_bytes.loc[bar_to_calculate_position, 'BarToCalculate'] = 'OFFSET_BAR'
+                
+                # Get the cycles that are actually used in the composite wave
+                active_periods = get_active_cycle_periods(cycle_results, wave_sum_args, full_results['number_of_cycles'])
+                cycle_string_for_combined = format_cycle_string(active_periods)
+                
                 _past_wave_list = wave_data.get('past', [])
                 _future_wave_list = wave_data.get('future', [])
 
@@ -1770,8 +1867,8 @@ if (st.session_state.get('rerun_wave_summation', False) and
                         for i_wave in range(_past_wave_length - 1):
                             _direction_change = (_past_wave_list[i_wave] > _past_wave_list[i_wave+1]) != \
                                                (_past_wave_list[i_wave-1] > _past_wave_list[i_wave] if i_wave > 0 else False)
-                            if _direction_change and cycle_periods_for_combined:
-                                combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_periods_for_combined[0]
+                            if _direction_change and cycle_string_for_combined:
+                                combined_df_for_bytes.loc[_data_start_idx + i_wave, 'Cycle'] = cycle_string_for_combined
 
                 if _future_wave_list:
                     _last_date = combined_df_for_bytes['Date'].iloc[-1] if not combined_df_for_bytes.empty else pd.Timestamp.now(tz='UTC')
@@ -1783,10 +1880,10 @@ if (st.session_state.get('rerun_wave_summation', False) and
                     for i_wave, val_wave in enumerate(_future_wave_list):
                         _future_date = _last_date + (_time_delta * (i_wave + 1))
                         _cycle_period_mark = np.nan
-                        if i_wave > 0 and cycle_periods_for_combined and \
+                        if i_wave > 0 and cycle_string_for_combined and \
                            (_future_wave_list[i_wave] > _future_wave_list[i_wave-1]) != \
                            (_future_wave_list[i_wave-1] > _future_wave_list[i_wave-2] if i_wave > 1 else False):
-                             _cycle_period_mark = cycle_periods_for_combined[0]
+                             _cycle_period_mark = cycle_string_for_combined
                         _future_rows.append({'Date': _future_date, 'Cycle': _cycle_period_mark})
                     if _future_rows:
                         _future_df_for_bytes = pd.DataFrame(_future_rows)
